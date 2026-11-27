@@ -1,12 +1,17 @@
 /**
- * [campaign] OWNER: campaign agent. Campaign missions + trigger/objective scripting. Headless-safe:
- * missions must run in Node tests with ui/camera = null.
+ * [campaign] OWNER: campaign agent. The "Code Red: Meilahti" campaign: mission registry + factory.
+ * Headless-safe: missions must run in Node tests with ui/camera = null.
+ *
+ * Missions are built on the scripting toolkit in ./script.ts (triggers, objectives, dialogue, waves,
+ * timer, victory/defeat) and live in ./missions/m1..m3.ts.
  */
 import type { Difficulty, PlayerId } from '../core/types';
 import type { CameraApi, GameUi, ObjectiveView } from '../core/ui';
 import type { AiController } from '../ai';
 import type { World } from '../sim/World';
-import { spawnMapResources, spawnSkirmishStart } from '../sim/setup';
+import { M1_INFO, PatientZero } from './missions/m1';
+import { ContainmentBreach, M2_INFO } from './missions/m2';
+import { M3_INFO, StrainOmega } from './missions/m3';
 
 export interface MissionInfo {
   id: string;                 // 'm1', 'm2', 'm3'
@@ -41,27 +46,15 @@ export interface MissionRunner {
   objectives(): ObjectiveView[];
 }
 
-export const CAMPAIGN: MissionInfo[] = [
-  {
-    id: 'm1', order: 1, title: 'Patient Zero', subtitle: 'Mission 1', mapId: 'meilahti',
-    briefing: ['An unknown pathogen has escaped from the old laundry building in the north of the campus.', 'Establish a defence and destroy the Infection Core.'],
-    objectivesPreview: ['Destroy the Infection Core'],
-  },
-];
+/** Campaign missions in play order (the main menu lists these). */
+export const CAMPAIGN: MissionInfo[] = [M1_INFO, M2_INFO, M3_INFO];
 
-class StubMission implements MissionRunner {
-  state: MissionState = 'running';
-  constructor(readonly info: MissionInfo, private ctx: MissionContext) {}
-  setup(): void { spawnMapResources(this.ctx.world); spawnSkirmishStart(this.ctx.world); }
-  attach(ui: GameUi | null): void {
-    ui?.setObjectives(this.objectives());
-    ui?.showDialogue({ speaker: 'SISU', text: 'Campaign scripting not installed yet — destroy the enemy base.', portrait: 'sisu' });
-  }
-  update(): void {}
-  objectives(): ObjectiveView[] { return [{ id: 'core', text: 'Destroy the Infection Core', state: 'active', primary: true }]; }
-}
-
+/** Create the runner for a mission id (unknown ids fall back to the first mission). */
 export function createMission(id: string, ctx: MissionContext): MissionRunner {
   const info = CAMPAIGN.find((m) => m.id === id) ?? CAMPAIGN[0]!;
-  return new StubMission(info, ctx);
+  switch (info.id) {
+    case 'm2': return new ContainmentBreach(info, ctx);
+    case 'm3': return new StrainOmega(info, ctx);
+    default: return new PatientZero(info, ctx);
+  }
 }

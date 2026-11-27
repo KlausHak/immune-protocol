@@ -78,7 +78,7 @@ export class World {
   private pendingCommands: Command[] = [];
   private pendingRemoval: Entity[] = [];
   private startedOrders = new WeakSet<Order>();
-  private lastAlert = new Map<string, number>();
+  private lastAlert = new Map<number, number>();
 
   constructor(opts: WorldOptions) {
     this.map = opts.map;
@@ -263,7 +263,8 @@ export class World {
     target.lastAttackerId = source ? source.id : null;
     this.events.emit('entityDamaged', { entity: target, amount, type, source });
     if (target.owner === NEUTRAL_PLAYER) return;
-    const key = `${target.owner}:${Math.floor(target.pos.x / 16)}:${Math.floor(target.pos.y / 16)}`;
+    // numeric key (owner, 16×16 area) — avoids a string allocation on every hit
+    const key = (target.owner * 4096 + Math.floor(target.pos.y / 16)) * 4096 + Math.floor(target.pos.x / 16);
     const last = this.lastAlert.get(key) ?? -999;
     if (this.time - last >= 8) {
       this.lastAlert.set(key, this.time);

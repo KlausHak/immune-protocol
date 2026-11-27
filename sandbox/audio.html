@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IMMUNE PROTOCOL — Audio sandbox</title>
+    <style>
+      html, body { margin: 0; background: #061016; color: #d8f3ef; font: 12px/1.35 system-ui, sans-serif; }
+      header { padding: 10px 16px 6px; border-bottom: 1px solid #12333a; display: flex; align-items: baseline; gap: 18px; }
+      h1 { margin: 0; font-size: 17px; letter-spacing: 0.06em; color: #2fd6c6; }
+      #summary { font-weight: 600; font-size: 14px; }
+      #summary.pass { color: #6dff9e; } #summary.fail { color: #ff6b7a; } #summary.run { color: #ffd36b; }
+      #note { color: #7fa8a6; }
+      #results { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; padding: 8px 16px; }
+      .card { background: #0b1d24; border: 1px solid #143640; border-radius: 4px; padding: 3px 6px 4px; min-width: 0; }
+      .card.bad { border-color: #ff6b7a; background: #2a0f15; }
+      .card .top { display: flex; justify-content: space-between; gap: 6px; white-space: nowrap; overflow: hidden; }
+      .card .name { font-weight: 600; color: #e8fffb; overflow: hidden; text-overflow: ellipsis; }
+      .card .ok { color: #6dff9e; } .card .ko { color: #ff6b7a; }
+      .card .m { color: #8fc1bd; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .card canvas { display: block; width: 100%; height: 16px; margin-top: 2px; }
+      .sec { grid-column: 1 / -1; color: #2fd6c6; font-weight: 600; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; }
+      #controls { padding: 6px 16px 24px; border-top: 1px solid #12333a; }
+      #controls h2 { font-size: 12px; color: #2fd6c6; margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.08em; }
+      #controls button { background: #0f2a31; color: #d8f3ef; border: 1px solid #1f5560; border-radius: 3px; padding: 3px 7px; margin: 2px; cursor: pointer; font: inherit; }
+      #controls button:hover { background: #164049; }
+      #controls button.on { background: #2fd6c6; color: #041014; }
+      #live { color: #ffd36b; margin-left: 8px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>IMMUNE PROTOCOL · AUDIO</h1>
+      <span id="summary" class="run">self-test not run</span>
+      <span id="note">procedural Web Audio — every sound rendered offline &amp; measured (peak / RMS / length); add ?selftest=1 to run on load</span>
+    </header>
+    <div id="results"></div>
+    <div id="controls"></div>
+    <script type="module" src="./audio.ts"></script>
+  </body>
+</html>

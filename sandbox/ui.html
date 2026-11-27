@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IMMUNE PROTOCOL — UI sandbox</title>
+    <style>
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #05080c; }
+      #app { position: fixed; inset: 0; }
+      #bg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+      #ui-root { position: absolute; inset: 0; pointer-events: none; font-family: system-ui, sans-serif; color: #e6f4f1; }
+      #ui-root * { box-sizing: border-box; }
+    </style>
+  </head>
+  <body>
+    <!--
+      UI testbed. Query flags (combine freely):
+        sel=worker|hq|enemy|construct|cache|lancer|none   single selection (default worker)
+        multi=1        multi-selection grid          dialogue=1   queued dialogue (cmo, sisu, omega)
+        objectives=1   objectives panel              timer=1      mission countdown
+        toasts=1       toasts, alerts, pings         pause=1      pause menu    settings=1 pause → settings
+        end=victory|defeat                           menu=1       main menu (page=campaign|skirmish|settings|howto|credits)
+        icons=1        icon gallery                  fps=1        FPS counter
+    -->
+    <div id="app">
+      <canvas id="bg"></canvas>
+      <div id="ui-root"></div>
+    </div>
+    <script type="module" src="./ui.ts"></script>
+  </body>
+</html>
