@@ -154,6 +154,7 @@ class FakeControls {
 }
 
 class SandboxGame implements GameContext {
+  readonly net = null; // [architect] multiplayer field (single-player sandbox)
   readonly app = app;
   readonly config: LaunchConfig = { mode: 'skirmish', mapId: 'test', difficulty: 'normal' as Difficulty };
   readonly world: World;

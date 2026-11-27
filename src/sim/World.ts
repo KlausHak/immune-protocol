@@ -320,6 +320,7 @@ export class World {
       case 'cancelTrain': { const b = own(cmd.buildingId); if (b) this.economy.cancelTrain(b, cmd.index); return; }
       case 'research': { const b = own(cmd.buildingId); if (b && b.kind === 'building') this.economy.queueResearch(b, cmd.upgradeId); return; }
       case 'cancelResearch': { const b = own(cmd.buildingId); if (b) this.economy.cancelResearch(b); return; }
+      case 'surrender': { this.defeatPlayer(cmd.playerId); this.checkTeamsAfterDefeat(); return; }
       case 'cancelConstruction': { const b = own(cmd.buildingId); if (b && b.construction) this.economy.cancelConstruction(b); return; }
       case 'setRally': {
         for (const id of cmd.buildingIds) { const b = own(id); if (b && b.kind === 'building') b.rally = { pos: clone(cmd.target), targetId: cmd.targetId }; }
@@ -574,6 +575,12 @@ export class World {
     }
     const teams = new Set(this.activePlayers().filter((p) => !p.defeated).map((p) => p.team));
     if (teams.size <= 1) this.endGame(teams.size === 1 ? [...teams][0]! : null, 'elimination');
+  }
+
+  /** End the game if only one team is left (used after a surrender; autoDefeat rules do the same each 10 ticks). */
+  private checkTeamsAfterDefeat(): void {
+    const teams = new Set(this.activePlayers().filter((p) => !p.defeated).map((p) => p.team));
+    if (teams.size <= 1) this.endGame(teams.size === 1 ? [...teams][0]! : null, 'surrender');
   }
 
   defeatPlayer(id: PlayerId): void {

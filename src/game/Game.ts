@@ -20,6 +20,7 @@ import type { AppApi, GameContext, LaunchConfig } from './contracts';
 import type { Settings } from './settings';
 import { buildEndResult } from './endResult';
 import { AUTO_SLOT, AUTOSAVE_INTERVAL } from './saves';
+import type { NetMatch } from '../net/types';
 
 export const LOCAL_PLAYER: PlayerId = 1;
 export const ENEMY_PLAYER: PlayerId = 2;
@@ -32,8 +33,10 @@ interface CameraStateApi {
 export class Game implements GameContext {
   readonly world: World;
   readonly map: MapData;
-  readonly localPlayerId = LOCAL_PLAYER;
-  readonly enemyPlayerId = ENEMY_PLAYER;
+  readonly localPlayerId: PlayerId;
+  readonly enemyPlayerId: PlayerId;
+  /** LAN multiplayer match (null in single-player): lockstep driver, session (chat/ping), match start info */
+  readonly net: NetMatch | null;
   readonly settings: Settings;
   readonly audio: AudioEngine;
   /** what to recreate this match from (also stored in saves) */
@@ -61,22 +64,31 @@ export class Game implements GameContext {
     this.settings = app.settings;
     this.audio = app.audio;
     const save = config.load;
+    this.net = config.net ?? null;
+    const ms = this.net?.start;
+    const playAs = !ms && config.debugPlayAs === ENEMY_PLAYER ? ENEMY_PLAYER : null;
+    this.localPlayerId = ms?.localPlayerId ?? playAs ?? LOCAL_PLAYER;
+    this.enemyPlayerId = ms ? (ms.players.find((p) => p.id !== ms.localPlayerId)?.id ?? ENEMY_PLAYER) : playAs ? LOCAL_PLAYER : ENEMY_PLAYER;
     const mode = save?.launch.mode ?? config.mode;
     const difficulty = save?.launch.difficulty ?? config.difficulty;
     const missionId = save?.launch.missionId ?? config.missionId ?? (mode === 'campaign' ? CAMPAIGN[0]!.id : undefined);
-    const mapId = save?.launch.mapId
+    const mapId = ms?.mapId ?? save?.launch.mapId
       ?? (mode === 'campaign' ? CAMPAIGN.find((m) => m.id === missionId)?.mapId ?? DEFAULT_MAP_ID() : config.mapId ?? DEFAULT_MAP_ID());
-    const seed = save?.launch.seed ?? config.seed ?? 1337;
-    this.launch = { mode, missionId, mapId, difficulty, seed };
+    const seed = ms?.seed ?? save?.launch.seed ?? config.seed ?? 1337;
+    this.launch = { mode: mode === 'multiplayer' ? 'skirmish' : mode, missionId, mapId, difficulty, seed };
     this.map = getMap(mapId);
-    this.world = createWorld(this.map, [
-      { id: LOCAL_PLAYER, faction: 'hospital', team: 1, controller: 'human' },
-      { id: ENEMY_PLAYER, faction: 'pathogen', team: 2, controller: 'ai', difficulty },
-    ], seed);
-    const ai = createAi(this.world, ENEMY_PLAYER, { difficulty });
-    this.ais.push(ai);
-    if (mode === 'campaign') {
-      this.mission = createMission(missionId!, { world: this.world, playerId: LOCAL_PLAYER, enemyId: ENEMY_PLAYER, ai, difficulty });
+    this.world = createWorld(this.map, ms
+      ? ms.players.map((p) => ({ id: p.id, faction: p.faction, team: p.team, controller: 'human' as const, name: p.name }))
+      : [
+        { id: LOCAL_PLAYER, faction: 'hospital', team: 1, controller: 'human' },
+        { id: ENEMY_PLAYER, faction: 'pathogen', team: 2, controller: playAs ? 'human' : 'ai', difficulty },
+      ], seed);
+    if (!ms && !playAs) {
+      const ai = createAi(this.world, ENEMY_PLAYER, { difficulty });
+      this.ais.push(ai);
+      if (mode === 'campaign') {
+        this.mission = createMission(missionId!, { world: this.world, playerId: LOCAL_PLAYER, enemyId: ENEMY_PLAYER, ai, difficulty });
+      }
     }
     if (save) {
       restoreMatch(save, this.world, this.ais, this.mission); // throws on incompatible saves (App handles it)
@@ -87,10 +99,10 @@ export class Game implements GameContext {
       spawnMapResources(this.world);
       spawnSkirmishStart(this.world);
     }
-    if (config.revealMap) this.world.vision.revealAll(LOCAL_PLAYER, true);
-    this.speed = save?.client?.speed ?? config.speed ?? 1;
+    if (config.revealMap && !ms) this.world.vision.revealAll(this.localPlayerId, true);
+    this.speed = ms ? 1 : save?.client?.speed ?? config.speed ?? 1;
 
-    this.renderer = new GameRenderer({ canvas, world: this.world, localPlayerId: LOCAL_PLAYER, settings: this.settings });
+    this.renderer = new GameRenderer({ canvas, world: this.world, localPlayerId: this.localPlayerId, settings: this.settings });
     this.controls = new Controls(this);
     this.ui = new Hud(uiRoot, this);
     this.audio.attach(this);
@@ -110,15 +122,17 @@ export class Game implements GameContext {
     this.raf = requestAnimationFrame(this.frame);
   }
 
-  issue(cmd: Command): void { this.world.issue(cmd); }
-  pause(): void { this.paused = true; }
-  resume(): void { this.paused = false; this.last = performance.now(); }
-  setSpeed(s: number): void { this.speed = Math.max(0.25, Math.min(8, s)); }
+  /** Local player's command: straight into the world, or through lockstep (runs on both clients at a future tick). */
+  issue(cmd: Command): void { if (this.net) this.net.lockstep.submit(cmd); else this.world.issue(cmd); }
+  /** Multiplayer can't pause or change speed (the opponent's sim must keep the same clock). */
+  pause(): void { if (!this.net) this.paused = true; }
+  resume(): void { if (!this.net) { this.paused = false; this.last = performance.now(); } }
+  setSpeed(s: number): void { if (!this.net) this.speed = Math.max(0.25, Math.min(8, s)); }
   quitToMenu(): void { this.app.quitToMenu(); }
   restart(): void { this.app.restartGame(); }
 
   /** Saving is allowed while the match is running (not after it ended). */
-  canSave(): boolean { return !this.world.rules.gameOver && !this.disposed; }
+  canSave(): boolean { return !this.net && !this.world.rules.gameOver && !this.disposed; }
 
   /** Snapshot the match into a storage slot ('quick' | 'auto' | 'slot1'…'slot8'). Resolves with the stored metadata. */
   async saveGame(slot: string, name?: string): Promise<SaveMeta> {
@@ -188,14 +202,20 @@ export class Game implements GameContext {
     const dtReal = Math.min(0.1, Math.max(0, (now - this.last) / 1000));
     this.last = now;
     try {
-      if (!this.paused) {
+      if (this.net) {
+        // lockstep: the driver decides how many ticks may run (0 while waiting for the opponent)
+        const ls = this.net.lockstep;
+        const n = Math.min(ls.ticksReady(dtReal), 8);
+        for (let i = 0; i < n && !this.disposed; i++) { ls.beforeTick(this.world); this.stepOnce(); ls.afterTick(this.world); }
+        this.acc = 0;
+      } else if (!this.paused) {
         this.acc += dtReal * this.speed;
         let steps = 0;
         while (this.acc >= TICK_DT && steps < 8 * Math.max(1, this.speed)) { this.stepOnce(); this.acc -= TICK_DT; steps++; }
         if (this.acc > TICK_DT * 4) this.acc = 0; // drop backlog after a stall
         this.maybeAutosave();
       }
-      const alpha = this.paused ? 1 : Math.min(1, this.acc / TICK_DT);
+      const alpha = this.net ? 1 : this.paused ? 1 : Math.min(1, this.acc / TICK_DT);
       this.controls.update(dtReal);
       this.renderer.render(alpha, dtReal);
       this.captureThumbnails(); // same task as render → the WebGL buffer is still valid
@@ -213,6 +233,7 @@ export class Game implements GameContext {
     for (const w of this.thumbWaiters) w(undefined);
     this.thumbWaiters = [];
     for (const u of this.unsub) u();
+    this.net?.lockstep.dispose();
     this.audio.detach();
     this.ui.dispose();
     this.controls.dispose();

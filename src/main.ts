@@ -1,7 +1,7 @@
 /**
  * Entry point. URL params (for testing/screenshots):
  *   ?autostart=skirmish|campaign  &mission=m1  &difficulty=easy|normal|hard|brutal  &map=meilahti
- *   &seed=1  &reveal=1  &speed=2  &quality=low|medium|high
+ *   &seed=1  &reveal=1  &speed=2  &quality=low|medium|high  &as=2 (debug: play the pathogens; no AI)
  * Debug handles: window.__app, window.__game (current match: world, issue(), stepOnce(), setSpeed()).
  */
 import { App } from './game/App';
@@ -26,6 +26,7 @@ if (auto === 'skirmish' || auto === 'campaign') {
     seed: q.has('seed') ? Number(q.get('seed')) : undefined,
     revealMap: q.get('reveal') === '1',
     speed: q.has('speed') ? Number(q.get('speed')) : undefined,
+    debugPlayAs: q.has('as') ? Number(q.get('as')) : undefined,
   });
 } else {
   app.showMenu();

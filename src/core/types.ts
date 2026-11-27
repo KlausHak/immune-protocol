@@ -353,7 +353,9 @@ export type Command =
   | (CmdBase & { type: 'cancelResearch'; buildingId: EntityId })
   | (CmdBase & { type: 'setRally'; buildingIds: EntityId[]; target: Vec2; targetId?: EntityId })
   | (CmdBase & { type: 'buildingAbility'; buildingId: EntityId; abilityId: string; target?: Vec2; targetId?: EntityId })
-  | (CmdBase & { type: 'cancelConstruction'; buildingId: EntityId });
+  | (CmdBase & { type: 'cancelConstruction'; buildingId: EntityId })
+  /** [architect] concede the match (multiplayer: must go through lockstep like any command) */
+  | (CmdBase & { type: 'surrender' });
 
 export type CommandType = Command['type'];
 

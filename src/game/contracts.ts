@@ -13,17 +13,23 @@ import type { AudioEngine } from '../audio/AudioEngine';
 import type { CampaignProgress, Settings } from './settings';
 import type { SaveGame, SaveMeta } from '../sim/save';
 import type { SaveStore } from './saves';
+import type { NetMatch } from '../net/types';
 
 export interface LaunchConfig {
-  mode: 'campaign' | 'skirmish';
+  /** 'multiplayer' = LAN 1v1 via lockstep (config.net required) */
+  mode: 'campaign' | 'skirmish' | 'multiplayer';
   missionId?: string;           // campaign
   mapId?: string;               // skirmish (default 'meilahti')
   difficulty: Difficulty;
   seed?: number;
+  /** LAN multiplayer match (from src/net): players/map/seed come from net.start */
+  net?: NetMatch;
   /** restore this saved match instead of starting fresh (mode/map/mission/difficulty/seed come from the save) */
   load?: SaveGame;
   /** debug/testing */
   revealMap?: boolean;
+  /** debug: control this player id in single-player (e.g. 2 = the pathogens; no AI, the other side idles) */
+  debugPlayAs?: number;
   speed?: number;
 }
 
@@ -59,6 +65,8 @@ export interface GameContext {
   readonly audio: AudioEngine;
   readonly ais: AiController[];
   readonly mission: MissionRunner | null;
+  /** LAN multiplayer: session (chat, ping, events) + lockstep (waitingReason); null in single-player */
+  readonly net: NetMatch | null;
   paused: boolean;
   speed: number;
   /** Issue a command for the local player (also used by HUD buttons). */
