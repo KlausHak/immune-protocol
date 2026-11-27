@@ -21,6 +21,8 @@ export interface ModelAnimState {
   aimAngle: number | null;
   /** entity facing (sim convention); root rotation is already applied by the render core */
   facing: number;
+  /** resource nodes: remaining amount / initial (1 = full). Others: 1. */
+  resourceFrac: number;
 }
 
 /**

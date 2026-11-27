@@ -176,6 +176,7 @@ export class GameRenderer {
         hpFrac: e.hp / Math.max(1, e.stats.maxHp), carrying: (e.gatherer?.carrying ?? 0) > 0,
         producing: (e.production?.queue.length ?? 0) > 0 && !e.construction, selected: this.selection.has(id),
         death: v.dying ? v.deathT : 0, aimAngle: target ? Math.atan2(target.pos.y - e.pos.y, target.pos.x - e.pos.x) : null, facing: e.facing,
+        resourceFrac: e.resource ? e.resource.amount / Math.max(1, e.resource.initial) : 1,
       };
       v.model.update(st, dtReal, this.time);
       const ring = this.rings.get(id);
