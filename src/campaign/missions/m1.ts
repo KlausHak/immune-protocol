@@ -13,7 +13,7 @@ import { angleOf, sub } from '../../core/math';
 import { NEUTRAL_PLAYER, type Entity, type Vec2 } from '../../core/types';
 import type { MissionInfo } from '../index';
 import {
-  byDifficulty, formatClock, line, polar, regionCenter, scaleComposition, ScriptedMission, type Composition,
+  byDifficulty, formatClock, line, polar, refOf, regionCenter, scaleComposition, ScriptedMission, type Composition, type SavedRef,
 } from '../script';
 
 export const M1_INFO: MissionInfo = {
@@ -143,9 +143,8 @@ export class PatientZero extends ScriptedMission {
   private probes = 0;
   private rescued = false;
 
-  protected build(): void {
+  protected spawn(): void {
     const s = this.script, P = s.playerId, d = s.difficulty;
-    s.setLighting('nordic_dusk');
     s.spawnMapResources();
     s.setResources(P, { matter: M1_TUNING.startSupplies, energy: 0 });
 
@@ -166,7 +165,11 @@ export class PatientZero extends ScriptedMission {
     s.setAiFlags({ economy: true, build: false, army: d !== 'easy', attack: false, expand: false, defend: true });
     const foe = s.world.players.get(s.enemyId);
     if (foe) foe.gatherMul *= byDifficulty(d, { easy: 0.5, normal: 0.75, hard: 1, brutal: 1.15 });
+  }
 
+  protected scriptMission(): void {
+    this.script.setLighting('nordic_dusk');
+    this.defineActions();
     this.scriptObjectives();
     this.scriptWaves();
     this.scriptRescue();
@@ -184,7 +187,56 @@ export class PatientZero extends ScriptedMission {
     const first = s.say(M1_LINES.intro[0]!);
     s.after(Math.max(1, first - 0.6), () => s.panTo(home, 3), 'intro-pan');
     s.say(M1_LINES.intro.slice(1));
-    s.after(10, () => s.hint(M1_HINTS.select, { id: 'select' }), 'hint-select');
+    s.hintLater(10, M1_HINTS.select, 'select');
+  }
+
+  protected saveState(): Record<string, unknown> {
+    return {
+      hq: refOf(this.hq), core: refOf(this.core), station: { ...this.station }, sanitizersTrained: this.sanitizersTrained,
+      wave1At: this.wave1At, buildShownAt: this.buildShownAt, trainShownAt: this.trainShownAt, probes: this.probes, rescued: this.rescued,
+    };
+  }
+
+  protected loadState(d: Record<string, unknown>): void {
+    this.hq = this.deref(d.hq as SavedRef);
+    this.core = this.deref(d.core as SavedRef);
+    this.station = { ...(d.station as Vec2) };
+    this.sanitizersTrained = d.sanitizersTrained as number;
+    this.wave1At = d.wave1At as number;
+    this.buildShownAt = d.buildShownAt as number;
+    this.trainShownAt = d.trainShownAt as number;
+    this.probes = d.probes as number;
+    this.rescued = d.rescued as boolean;
+  }
+
+  /** Delayed steps scheduled from triggers (named, so they survive save/load). */
+  private defineActions(): void {
+    const s = this.script;
+    s.defineAction('revealBuild', () => {
+      s.revealObjective('build');
+      this.buildShownAt = s.time;
+      s.hint(M1_HINTS.buildWard, { id: 'build-ward' });
+    });
+    s.defineAction('revealTrain', () => {
+      s.revealObjective('train');
+      this.trainShownAt = s.time;
+      s.hint(M1_HINTS.train, { id: 'train' });
+    });
+    s.defineAction('revealCore', () => {
+      const corePos = this.core?.pos ?? s.refs.point('enemy_start');
+      s.revealObjective('core');
+      s.reveal(corePos, 10, 8);
+      s.ping(corePos);
+      s.hint(M1_HINTS.attackMove, { id: 'attack-move' });
+      s.hintLater(25, M1_HINTS.groups, 'groups');
+    });
+    s.defineAction('revealRescue', () => {
+      if (this.rescued) return;
+      s.revealObjective('rescue');
+      s.reveal(this.station, 7, 10);
+      s.ping(this.station, 0x5cf2c8);
+      s.hint(M1_HINTS.rescue, { id: 'rescue' });
+    });
   }
 
   // ───────────────────────── setup helpers ─────────────────────────
@@ -244,22 +296,14 @@ export class PatientZero extends ScriptedMission {
     s.when(() => O.isActive('gather') && s.world.player(P).resources.matter >= T.gatherGoal, () => {
       s.completeObjective('gather');
       s.say(M1_LINES.gathered);
-      s.after(OBJECTIVE_BEAT, () => {
-        s.revealObjective('build');
-        this.buildShownAt = s.time;
-        s.hint(M1_HINTS.buildWard, { id: 'build-ward' });
-      }, 'reveal-build');
+      s.schedule(OBJECTIVE_BEAT, 'revealBuild');
     }, { name: 'gather-done' });
     // Ward + Pharmacy
     s.when(() => s.completed(P, 'hosp_ward') > 0, () => { if (!O.isDone('build')) s.bark(M1_LINES.wardDone); }, { interval: 0.5, name: 'ward-done' });
     s.when(() => O.isActive('build') && s.completed(P, 'hosp_ward') > 0 && s.completed(P, 'hosp_pharmacy') > 0, () => {
       s.completeObjective('build');
       s.say([...M1_LINES.built, ...M1_LINES.train]);
-      s.after(OBJECTIVE_BEAT, () => {
-        s.revealObjective('train');
-        this.trainShownAt = s.time;
-        s.hint(M1_HINTS.train, { id: 'train' });
-      }, 'reveal-train');
+      s.schedule(OBJECTIVE_BEAT, 'revealTrain');
     }, { interval: 0.5, name: 'build-done' });
     // Sanitizers
     s.when(() => O.isActive('train') && this.sanitizersTrained >= T.sanitizerGoal, () => {
@@ -278,15 +322,8 @@ export class PatientZero extends ScriptedMission {
     s.when(() => this.wave1At >= 0 && s.time - this.wave1At >= T.surviveTimeout && s.count(P, 'hosp_hq') > 0, waveDone, { interval: 1, name: 'wave1-timeout' });
     // Final objective once the training wheels are off
     s.when(() => O.isDone('train') && O.isDone('wave') && O.isHidden('core'), () => {
-      const corePos = this.core?.pos ?? s.refs.point('enemy_start');
       s.say(M1_LINES.core);
-      s.after(OBJECTIVE_BEAT, () => {
-        s.revealObjective('core');
-        s.reveal(corePos, 10, 8);
-        s.ping(corePos);
-        s.hint(M1_HINTS.attackMove, { id: 'attack-move' });
-        s.after(25, () => s.hint(M1_HINTS.groups, { id: 'groups' }), 'hint-groups');
-      }, 'reveal-core');
+      s.schedule(OBJECTIVE_BEAT, 'revealCore');
     }, { interval: 0.5, name: 'core-reveal' });
     if (this.core) {
       const hit = s.onDamaged(this.core, () => { hit.cancel(); s.bark(M1_LINES.coreHit); }, { byOwner: P, cooldown: 0, name: 'core-hit' });
@@ -343,7 +380,7 @@ export class PatientZero extends ScriptedMission {
       s.revealObjective('wave');
       s.hint(M1_HINTS.fightBack, { id: 'fight-back' });
     }
-    if (i === 2) s.after(6, () => s.hint(M1_HINTS.uvTurret, { id: 'uv-turret' }), 'hint-uv');
+    if (i === 2) s.hintLater(6, M1_HINTS.uvTurret, 'uv-turret');
   }
 
   /** Light probing waves after the scripted three, until the core falls. */
@@ -364,13 +401,7 @@ export class PatientZero extends ScriptedMission {
     const offer = (): void => {
       if (this.rescued || !s.objectives.isHidden('rescue')) return;
       s.say(M1_LINES.rescueCall);
-      s.after(OBJECTIVE_BEAT + 2, () => {
-        if (this.rescued) return;
-        s.revealObjective('rescue');
-        s.reveal(this.station, 7, 10);
-        s.ping(this.station, 0x5cf2c8);
-        s.hint(M1_HINTS.rescue, { id: 'rescue' });
-      }, 'reveal-rescue');
+      s.schedule(OBJECTIVE_BEAT + 2, 'revealRescue');
     };
     s.at(T.rescueCallAt, offer, 'rescue-call');
     s.at(T.rescueReminderAt, () => { if (!this.rescued && s.objectives.isActive('rescue')) s.bark(M1_LINES.rescueReminder, 20); }, 'rescue-reminder');
@@ -393,7 +424,7 @@ export class PatientZero extends ScriptedMission {
     s.completeObjective('rescue');
     s.say(M1_LINES.rescued, { urgent: true });
     s.ping(this.station, 0x5cf2c8);
-    s.after(4, () => s.hint(M1_HINTS.medics, { id: 'medics' }), 'hint-medics');
+    s.hintLater(4, M1_HINTS.medics, 'medics');
   }
 
   // ───────────────────────── reactive hints ─────────────────────────
@@ -414,7 +445,7 @@ export class PatientZero extends ScriptedMission {
     s.when(() => O.isActive('build') && s.count(P, 'hosp_ward') > 0 && s.count(P, 'hosp_pharmacy') === 0,
       () => s.hint(M1_HINTS.buildPharmacy, { id: 'build-pharmacy' }), { interval: 1, name: 'hint-pharmacy' });
     s.onEvent('constructionStarted', (p) => p.building.owner === P && p.building.defId === 'hosp_pharmacy',
-      () => s.after(6, () => s.hint(M1_HINTS.assist, { id: 'assist' })), { name: 'hint-assist' });
+      () => s.hintLater(6, M1_HINTS.assist, 'assist'), { name: 'hint-assist' });
 
     // Training
     s.when(() => O.isActive('train') && this.trainShownAt >= 0 && s.time - this.trainShownAt > 25,
@@ -428,10 +459,10 @@ export class PatientZero extends ScriptedMission {
     // Combat
     s.onEvent('underAttack', (p) => p.playerId === P, () => s.hint(M1_HINTS.alert, { id: 'alert' }), { name: 'hint-alert' });
     s.onEvent('entityDamaged', (p) => p.entity.owner === P && p.entity.kind === 'building' && s.time > 30,
-      () => s.after(3, () => s.hint(M1_HINTS.repair, { id: 'repair' })), { name: 'hint-repair' });
+      () => s.hintLater(3, M1_HINTS.repair, 'repair'), { name: 'hint-repair' });
     s.onEvent('productionComplete', (p) => p.unit.owner === P && p.unit.defId === 'hosp_medic',
       () => s.hint(M1_HINTS.medics, { id: 'medics' }), { name: 'hint-medic' });
-    s.when(() => O.isDone('wave') && s.count(P, 'hosp_uv_turret') === 0, () => s.after(20, () => s.hint(M1_HINTS.uvTurret, { id: 'uv-turret' })), { interval: 1, name: 'hint-uv-1' });
+    s.when(() => O.isDone('wave') && s.count(P, 'hosp_uv_turret') === 0, () => s.hintLater(20, M1_HINTS.uvTurret, 'uv-turret'), { interval: 1, name: 'hint-uv-1' });
     s.when(() => s.time > 420 || s.count(P, 'hosp_uv_turret') > 0, () => s.hint(M1_HINTS.lancers, { id: 'lancers' }), { interval: 2, name: 'hint-lancers' });
   }
 

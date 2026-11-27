@@ -130,6 +130,22 @@ export class RtsCamera implements CameraApi {
     if (immediate) { this.distance = this.goalDistance; this.applyPose(); }
   }
   setYaw(yaw: number, immediate = false): void { this.goalYaw = yaw; if (immediate) { this.yaw = yaw; this.applyPose(); } }
+  /** Save-game snapshot of the view. */
+  getState(): { x: number; y: number; distance: number; yaw: number } {
+    return { x: this.target.x, y: this.target.y, distance: this.goalDistance, yaw: this.goalYaw };
+  }
+  /** Restore a snapshot immediately (clamped, no pan animation). */
+  setState(s: { x: number; y: number; distance: number; yaw: number }): void {
+    const L = CAMERA_LIMITS;
+    const d = Number.isFinite(s.distance) ? clamp(s.distance, L.minDistance, L.maxDistance) : L.defaultDistance;
+    this.goalDistance = this.distance = d;
+    const zt = this.getZoom();
+    this.pitch = lerp(L.pitchNear, L.pitchFar, zt * zt * (3 - 2 * zt));
+    this.goalYaw = this.yaw = Number.isFinite(s.yaw) ? s.yaw : 0;
+    this.drag = null;
+    this.lookAt({ x: Number.isFinite(s.x) ? s.x : this.target.x, y: Number.isFinite(s.y) ? s.y : this.target.y }, true);
+  }
+
   /** True while a middle-mouse pan/rotate drag is in progress (Controls may suppress hover/box-select). */
   get dragging(): boolean { return this.drag !== null; }
   /** Call when the canvas is resized/moved. */

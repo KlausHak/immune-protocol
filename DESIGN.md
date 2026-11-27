@@ -216,3 +216,22 @@ the sim/AI/campaign so runs are reproducible.
    matters (see budgets). No placeholder "TODO" behaviour in your area when you finish.
 7. **Final report** (your last message, ≤ 350 words): what you built, public API/contract notes,
    files, verification evidence (tsc, tests, screenshot paths), known issues, requests to others.
+
+## 11. Save / load
+* **Snapshots, not replays.** `src/sim/save` captures the world core (tick, RNG state, ids, rules, pending
+  commands), every entity field (incl. `entity.ext.*`), players and projectiles, plus each module's private
+  runtime through **SaveParticipants** (`world.registerSaveParticipant({ key, save, load })`, registered in
+  `install*()`), plus `AiController.save/load` and `MissionRunner.save/restore`.
+* **Codec rules** (`src/sim/save/codec.ts`): saved data may contain plain objects, arrays, numbers, strings,
+  booleans, null, `Map`, `Set` and typed arrays. Class instances and functions throw (with the path); store
+  entity **ids**, never entity objects.
+* **Restore order:** fresh `createWorld()` → players → entities (`world.restoreEntity`, emits `entitySpawned`
+  with `world.restoring === true`, re-blocks footprints) → projectiles → world core → participants' `load` (in
+  registration order) → `ai.load` → `mission.restore` (instead of `setup`) → `mission.attach(ui, cam,
+  { restored: true })`.
+* **Correctness = determinism:** `tests/save/roundtrip.test.ts` saves mid-battle, round-trips through JSON,
+  loads, and requires the copy to evolve identically to the original every tick (`firstDifference` names the
+  first diverging field).
+* **Client:** `Game.saveGame(slot, name?)` (thumbnail from the next rendered frame), autosave every 180 s of game
+  time to `auto`, F5/F9 quick save/load, `App.loadGame(slot | SaveGame)`; storage in IndexedDB
+  (`src/game/saves.ts`: slots `quick`, `auto`, `slot1`–`slot8`, export/import `.json` files).

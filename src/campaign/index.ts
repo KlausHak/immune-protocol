@@ -40,10 +40,16 @@ export interface MissionRunner {
   /** Spawn starting forces/resources, configure AI flags, set world.rules.autoDefeat = false. Called before rendering starts. */
   setup(): void;
   /** Called once UI exists (null in headless runs): opening dialogue, objectives, camera intro. */
-  attach(ui: GameUi | null, camera: CameraApi | null): void;
+  attach(ui: GameUi | null, camera: CameraApi | null, opts?: { restored?: boolean }): void;
   /** Called every sim tick after the AI and before world.step(). Ends the game via world.endGame(team, reason). */
   update(dt: number): void;
   objectives(): ObjectiveView[];
+  /** [save] Mission script state (triggers fired, objectives, timers, phase…) as codec-safe data. */
+  save?(): unknown;
+  /** [save] Called INSTEAD of setup() when loading a save, after world/entities/AI are restored. Must rebuild
+   *  triggers/objectives from `data` without spawning anything. attach() is then called with { restored: true }
+   *  (no intro dialogue/camera pan; re-show objectives and timer). */
+  restore?(data: unknown): void;
 }
 
 /** Campaign missions in play order (the main menu lists these). */

@@ -17,8 +17,10 @@ import { mapPreview } from './mapRender';
 import { MenuBackground } from './menu/background';
 import { createSettingsPanel, type SettingsPanel } from './settingsPanel';
 import { ensureUiStyles } from './styles';
+import { createLoadPanel, errText, saveSummary, UI_TOAST_EVENT, type Panel } from './saveLoad';
+import type { NotifyKind } from '../core/ui';
 
-type Screen = 'home' | 'campaign' | 'skirmish' | 'settings' | 'howto' | 'credits';
+type Screen = 'home' | 'campaign' | 'skirmish' | 'load' | 'settings' | 'howto' | 'credits';
 
 const PREF_KEY = 'immune-protocol.menu.v1';
 const DIFFS: Array<[Difficulty, string, string]> = [
@@ -89,6 +91,9 @@ export class MainMenu {
   private screen: Screen = 'home';
   private prefs: Prefs = loadPrefs();
   private settings: SettingsPanel | null = null;
+  private loadPanel: Panel | null = null;
+  private continueBtn!: HTMLButtonElement;
+  private toastBox!: HTMLDivElement;
   private lastHover: Element | null = null;
   private lastHoverT = 0;
   private timers: number[] = [];
@@ -112,8 +117,15 @@ export class MainMenu {
       b.addEventListener('click', () => { this.sound('click'); this.open(s); });
       this.navBtns.set(s, b);
     };
+    // Continue (latest save) — shown only when a save exists (filled in by refreshContinue)
+    this.continueBtn = el('button', 'ip-nav-btn is-continue', this.nav);
+    this.continueBtn.type = 'button';
+    this.continueBtn.dataset.testid = 'continue-button';
+    this.continueBtn.style.display = 'none';
+    this.continueBtn.addEventListener('click', () => { void this.continueLatest(); });
     item('campaign', 'ui.flag', 'Campaign', `${CAMPAIGN_NAME} · ${CAMPAIGN.length} mission${CAMPAIGN.length === 1 ? '' : 's'}`);
     item('skirmish', 'ui.swords', 'Skirmish', 'Free battle against The Contagion AI');
+    item('load', 'ui.restart', 'Load Game', 'Saved matches, quicksave & autosave, import');
     item('settings', 'ui.sliders', 'Settings', 'Audio, controls and display');
     item('howto', 'ui.book', 'How to Play', 'Controls cheat sheet & field manual');
     item('credits', 'ui.people', 'Credits', 'The fifteen-agent team');
@@ -124,6 +136,7 @@ export class MainMenu {
     this.ticker = el('div', 'ip-panel ip-ecg ip-ticker');
     this.ticker.innerHTML = `<span class="ip-ticker-dot"></span><span><b>CODE RED</b> · Unknown pathogen detected — Old Laundry, North Campus</span><span class="ip-ticker-time">Meilahti · −3 °C · Dusk</span>`;
 
+    this.toastBox = el('div', 'ip-menu-toast', this.el);
     this.el.addEventListener('pointerover', this.onHover);
     this.el.addEventListener('contextmenu', (e) => e.preventDefault());
     this.renderRight();
@@ -133,7 +146,9 @@ export class MainMenu {
     ensureUiStyles();
     if (!this.el.isConnected) this.root.appendChild(this.el);
     window.addEventListener('keydown', this.onKey);
+    window.addEventListener(UI_TOAST_EVENT, this.onToastEvent);
     this.bg.start();
+    void this.refreshContinue();
     this.screen = this.screen === 'campaign' || this.screen === 'skirmish' ? this.screen : 'home';
     this.renderRight();
     this.focusFirst();
@@ -141,6 +156,9 @@ export class MainMenu {
 
   hide(): void {
     window.removeEventListener('keydown', this.onKey);
+    window.removeEventListener(UI_TOAST_EVENT, this.onToastEvent);
+    this.loadPanel?.dispose();
+    this.loadPanel = null;
     this.bg.stop();
     this.settings?.dispose();
     this.settings = null;
@@ -153,8 +171,47 @@ export class MainMenu {
 
   /** Open a page directly ('campaign' | 'skirmish' | 'settings' | 'howto' | 'credits' | 'home'). */
   openScreen(screen: string): void {
-    const ok: Screen[] = ['home', 'campaign', 'skirmish', 'settings', 'howto', 'credits'];
+    const ok: Screen[] = ['home', 'campaign', 'skirmish', 'load', 'settings', 'howto', 'credits'];
     if ((ok as string[]).includes(screen)) this.open(screen as Screen);
+  }
+
+  // ───────────────────────── saves ─────────────────────────
+  private onToastEvent = (e: Event): void => {
+    const d = (e as CustomEvent<{ text: string; kind: NotifyKind }>).detail;
+    if (d?.text) this.toast(d.text, d.kind ?? 'warning');
+  };
+
+  /** Menu toast (errors from loading, imports, exports). */
+  toast(text: string, kind: NotifyKind = 'info'): void {
+    const t = el('div', `ip-toast k-${kind}`, this.toastBox);
+    t.innerHTML = glyphHtml(kind === 'success' ? 'ui.check' : kind === 'info' ? 'ui.info' : 'ui.alert');
+    el('span', '', t, text);
+    const life = kind === 'warning' || kind === 'alert' ? 6000 : 3500;
+    window.setTimeout(() => { t.classList.add('is-out'); window.setTimeout(() => t.remove(), 460); }, life);
+    while (this.toastBox.children.length > 3) this.toastBox.firstElementChild?.remove();
+  }
+
+  private async refreshContinue(): Promise<void> {
+    let latest = null;
+    try { latest = await this.app.saves.latest(); } catch { latest = null; }
+    const b = this.continueBtn;
+    if (!latest) { b.style.display = 'none'; return; }
+    b.style.display = '';
+    b.innerHTML = `${glyphHtml('ui.play')}<span class="ip-nav-txt"><span class="ip-nav-label">Continue</span><span class="ip-nav-desc">${esc(saveSummary(latest))}</span></span>`;
+    b.dataset.slot = latest.slot;
+  }
+
+  private async continueLatest(): Promise<void> {
+    this.sound('confirm');
+    try {
+      const latest = await this.app.saves.latest();
+      if (!latest) throw new Error('There is no saved game to continue.');
+      await this.app.loadGame(latest.slot);
+    } catch (err) {
+      this.sound('error');
+      this.toast(`Could not continue: ${errText(err)}`, 'warning');
+      void this.refreshContinue();
+    }
   }
 
   // ───────────────────────── helpers ─────────────────────────
@@ -221,6 +278,8 @@ export class MainMenu {
   private renderRight(): void {
     this.settings?.dispose();
     this.settings = null;
+    this.loadPanel?.dispose();
+    this.loadPanel = null;
     for (const [s, b] of this.navBtns) b.classList.toggle('is-current', s === this.screen);
     this.right.textContent = '';
     if (this.screen === 'home') { this.right.appendChild(this.ticker); return; }
@@ -229,6 +288,7 @@ export class MainMenu {
     const titles: Record<Exclude<Screen, 'home'>, [string, string]> = {
       campaign: ['Campaign', CAMPAIGN_NAME],
       skirmish: ['Skirmish', 'Choose your battleground'],
+      load: ['Saved games', 'Load Game'],
       settings: ['Options', 'Settings'],
       howto: ['Field manual', 'How to Play'],
       credits: ['Made by', 'Credits'],
@@ -245,6 +305,10 @@ export class MainMenu {
     switch (this.screen) {
       case 'campaign': this.renderCampaign(body); break;
       case 'skirmish': this.renderSkirmish(body); break;
+      case 'load':
+        this.loadPanel = createLoadPanel({ app: this.app, game: null, toast: (t, k) => this.toast(t, k), sound: (k) => this.sound(k) });
+        body.appendChild(this.loadPanel.el);
+        break;
       case 'settings': this.settings = createSettingsPanel(this.app); body.appendChild(this.settings.el); break;
       case 'howto': this.renderHowTo(body); break;
       case 'credits': this.renderCredits(body); break;

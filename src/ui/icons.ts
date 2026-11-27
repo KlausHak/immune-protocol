@@ -285,6 +285,8 @@ const UI: Record<string, string> = {
   'ui.restart': `<path d="M4.2 10 A5.8 5.8 0 1 0 6 5.8"/><path d="M5.6 2.4 V6.2 H9.4"/>`,
   'ui.next': `<path d="M5 4.5 L11 10 L5 15.5 M11 4.5 L17 10 L11 15.5"/>`,
   'ui.home': `<path d="M3 9.5 L10 3.5 L17 9.5 M5 8 V16.5 H15 V8"/>`,
+  'ui.download': `<path d="M10 3 V12.5 M6 8.8 L10 12.8 L14 8.8 M3.5 13.5 V16.5 H16.5 V13.5"/>`,
+  'ui.upload': `<path d="M10 13 V3.5 M6 7.2 L10 3.2 L14 7.2 M3.5 13.5 V16.5 H16.5 V13.5"/>`,
   'ui.plus': `<path d="M10 4 V16 M4 10 H16"/>`,
   'ui.minus': `<path d="M4 10 H16"/>`,
   'ui.trophy': `<path d="M6 3.5 H14 V8 A4 4 0 0 1 6 8 Z M6 5 H3.2 C3.2 8 4.5 9 6.3 9.2 M14 5 H16.8 C16.8 8 15.5 9 13.7 9.2 M10 12 V15 M6.5 16.5 H13.5"/>`,

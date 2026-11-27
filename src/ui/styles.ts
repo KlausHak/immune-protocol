@@ -396,10 +396,59 @@ const CSS = /* css */ `
 .ip-set-foot { display: flex; align-items: center; gap: ${u(10)}; margin-top: ${u(2)}; }
 .ip-set-foot .ip-set-hint { flex: 1; }
 
+/* save / load */
+.ip-save-card { width: ${u(800)}; }
+.ip-saveload { position: relative; display: flex; flex-direction: column; gap: ${u(10)}; min-height: ${u(200)}; overflow: auto; }
+.ip-saveload.is-busy { cursor: progress; }
+.ip-saveload.is-busy .ip-slot { pointer-events: none; opacity: .6; }
+.ip-save-name { display: flex; align-items: center; gap: ${u(12)}; }
+.ip-input { flex: 1; height: ${u(34)}; padding: 0 ${u(12)}; border-radius: ${u(8)}; border: 1px solid var(--ip-line-2); background: rgba(0, 0, 0, .35); color: var(--ip-text);
+  font: 600 ${u(13)} var(--ip-font); outline: none; pointer-events: auto; user-select: text; -webkit-user-select: text; }
+.ip-input:focus { border-color: var(--ip-accent); box-shadow: 0 0 0 ${u(3)} rgba(var(--ip-accent-rgb), .2); }
+.ip-input:disabled { opacity: .45; }
+.ip-load-bar { display: flex; align-items: center; gap: ${u(12)}; }
+.ip-load-bar .ip-set-hint { flex: 1; }
+.ip-slots { display: grid; grid-template-columns: 1fr 1fr; gap: ${u(8)}; }
+.ip-slots-empty { grid-column: 1 / -1; padding: ${u(30)} 0; text-align: center; color: var(--ip-faint); font-size: ${u(13)}; }
+.ip-slot { position: relative; display: flex; gap: ${u(12)}; align-items: center; padding: ${u(8)}; border-radius: ${u(12)}; cursor: pointer; outline: none;
+  background: rgba(255, 255, 255, .03); border: 1px solid rgba(255, 255, 255, .07); transition: border-color .12s, background .12s; min-width: 0; }
+.ip-slot:hover, .ip-slot:focus-visible { border-color: var(--ip-accent); background: rgba(var(--ip-accent-rgb), .08); }
+.ip-slot.is-empty { border-style: dashed; }
+.ip-slot.is-disabled { pointer-events: none; opacity: .5; }
+.ip-slot-thumb { flex: none; width: ${u(112)}; height: ${u(63)}; border-radius: ${u(8)}; overflow: hidden; background: #061015; border: 1px solid rgba(255, 255, 255, .08);
+  display: flex; align-items: center; justify-content: center; color: var(--ip-faint); font-size: ${u(22)}; }
+.ip-slot-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ip-slot-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: ${u(1)}; }
+.ip-slot-label { font-size: ${u(8.5)}; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; color: var(--ip-accent); }
+.ip-slot-name { font-size: ${u(13.5)}; font-weight: 720; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ip-slot-name.is-dim { color: var(--ip-faint); font-weight: 600; }
+.ip-slot-sub, .ip-slot-time { font-size: ${u(11)}; color: var(--ip-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ip-slot-time { color: var(--ip-faint); font-variant-numeric: tabular-nums; }
+.ip-slot-actions { display: flex; flex-direction: column; gap: ${u(4)}; }
+.ip-icon-btn { width: ${u(26)}; height: ${u(26)}; border-radius: ${u(7)}; display: flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; pointer-events: auto;
+  background: rgba(0, 0, 0, .3); border: 1px solid var(--ip-line); color: var(--ip-dim); font-size: ${u(13)}; }
+.ip-icon-btn:hover { color: var(--ip-accent-2); border-color: var(--ip-accent); }
+.ip-icon-btn.is-danger:hover { color: var(--ip-alert); border-color: var(--ip-alert); }
+.ip-err { display: flex; align-items: center; gap: ${u(8)}; padding: ${u(8)} ${u(12)}; border-radius: ${u(8)}; font-size: ${u(12.5)}; color: #ffd1d6; background: rgba(255, 90, 107, .1); border: 1px solid rgba(255, 90, 107, .35); }
+.ip-err .ip-glyph { color: var(--ip-alert); font-size: ${u(15)}; }
+.ip-confirm-ov { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center; border-radius: inherit; background: rgba(2, 8, 12, .72); }
+.ip-confirm-box { width: min(92%, ${u(400)}); padding: ${u(16)} ${u(18)}; border-radius: ${u(12)}; background: linear-gradient(180deg, rgba(18, 38, 46, .98), rgba(7, 16, 22, .98)); border: 1px solid var(--ip-line-2); box-shadow: 0 ${u(12)} ${u(30)} rgba(0, 0, 0, .5); display: flex; flex-direction: column; gap: ${u(8)}; }
+.ip-confirm-title { font-size: ${u(15)}; font-weight: 800; letter-spacing: .04em; }
+.ip-confirm-box .ip-confirm-txt { color: var(--ip-dim); text-align: left; }
+.ip-confirm-box .ip-confirm-row { margin-top: ${u(6)}; justify-content: flex-end; }
+.ip-confirm-box .ip-confirm-row .ip-btn { flex: 0 0 auto; min-width: ${u(110)}; }
+.ip-confirm-card { width: ${u(440)}; min-height: ${u(170)}; }
+.ip-saving { position: absolute; top: ${u(62)}; right: ${u(120)}; display: flex; align-items: center; gap: ${u(7)}; padding: ${u(4)} ${u(10)}; border-radius: ${u(999)};
+  font-size: ${u(11)}; font-weight: 700; letter-spacing: .08em; color: var(--ip-accent-2); background: rgba(6, 16, 22, .85); border: 1px solid var(--ip-line-2); pointer-events: none; }
+.ip-saving::before { content: ""; width: ${u(10)}; height: ${u(10)}; border-radius: 50%; border: 2px solid rgba(var(--ip-accent-rgb), .3); border-top-color: var(--ip-accent); animation: ip-spin .8s linear infinite; }
+@keyframes ip-spin { to { transform: rotate(360deg); } }
+.ip-menu-toast { position: absolute; left: 50%; bottom: ${u(28)}; transform: translateX(-50%); z-index: 30; }
+.ip-nav-btn.is-continue { border-color: rgba(var(--ip-accent-rgb), .45); background: linear-gradient(90deg, rgba(var(--ip-accent-rgb), .22), rgba(var(--ip-accent-rgb), .04)); }
+
 /* end screen */
 .ip-end { background: radial-gradient(ellipse at center, rgba(2, 18, 20, .55), rgba(0, 3, 5, .9)); }
 .ip-end.is-defeat { background: radial-gradient(ellipse at center, rgba(30, 4, 8, .55), rgba(5, 0, 1, .92)); }
-.ip-end-card { width: ${u(640)}; padding: ${u(26)} ${u(34)} ${u(26)}; display: flex; flex-direction: column; align-items: center; animation: ip-pop .5s ease-out; }
+.ip-end-card { width: ${u(700)}; padding: ${u(26)} ${u(34)} ${u(26)}; display: flex; flex-direction: column; align-items: center; animation: ip-pop .5s ease-out; }
 .ip-end.is-defeat .ip-end-card { --ip-accent: #ff5a6b; --ip-accent-rgb: 255, 90, 107; --ip-accent-2: #ffc1c8; --ip-line: rgba(255, 90, 107, .2); --ip-line-2: rgba(255, 90, 107, .4); }
 .ip-end-ecg { width: 100%; height: ${u(54)}; margin-bottom: ${u(4)}; }
 .ip-end-ecg path { fill: none; stroke: var(--ip-accent); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 4px rgba(var(--ip-accent-rgb), .8)); stroke-dasharray: 900; stroke-dashoffset: 900; animation: ip-end-draw 2.4s ease-out forwards; }
@@ -419,7 +468,10 @@ const CSS = /* css */ `
 .ip-end-stats td.is-best { position: relative; }
 .ip-end-stats td.is-best::before { content: "▲"; font-size: ${u(8)}; margin-right: ${u(6)}; color: var(--ip-ok); vertical-align: 1px; }
 .ip-end-btns { display: flex; gap: ${u(10)}; }
-.ip-end-btns .ip-btn { min-width: ${u(150)}; height: ${u(44)}; font-size: ${u(14)}; }
+.ip-end-btns .ip-btn { min-width: ${u(150)}; height: ${u(44)}; font-size: ${u(14)}; white-space: nowrap; }
+/* software rasterisers: entrance animations crawl and screenshots catch them half-faded → show final state */
+.ip-softgpu .ip-modal, .ip-softgpu .ip-end-card, .ip-softgpu .ip-pause-card, .ip-softgpu .ip-set-card, .ip-softgpu .ip-page, .ip-softgpu .ip-toast, .ip-softgpu .ip-alert { animation: none; }
+.ip-softgpu .ip-end-ecg path { animation: none; stroke-dashoffset: 0; }
 
 /* ───────────── main menu ───────────── */
 .ip-menu { position: absolute; inset: 0; pointer-events: auto; overflow: hidden; background: #03070c; }

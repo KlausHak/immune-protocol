@@ -6,7 +6,7 @@ of viruses, bacteria and fungi trying to overrun the campus.
 
 > **Status: work in progress.** Built by a team of 15 Claude agents working in parallel on one codebase,
 > coordinated by an architect agent. Gameplay systems, AI, campaign, models, audio and UI are in place;
-> rendering performance, lighting and balance are still being tuned.
+> rendering performance and balance are still being tuned.
 
 ## Features
 - **Two asymmetric factions.** Hospital staff, robots and vehicles (Sanitizers, Field Medics, UV Lancers,
@@ -21,6 +21,9 @@ of viruses, bacteria and fungi trying to overrun the campus.
 - **Campaign "Code Red: Meilahti".** Three scripted missions with objectives, dialogue and a final boss,
   Strain Omega.
 - **Skirmish** on the 128×128 HUS Meilahti campus map.
+- **Save and load** in skirmish and campaign: 8 named slots with thumbnails, quicksave/quickload (F5/F9),
+  an autosave every 3 minutes of game time, Continue from the main menu, and export/import as `.json` files.
+  Saves are full snapshots; a test checks that a loaded game plays out exactly like the original.
 - **Everything is procedural.** All 3D models, textures, particle effects, sound effects and the adaptive
   music are generated in code; there are no asset files.
 
@@ -45,7 +48,7 @@ npx vite build --base ./ && npx vite preview
 Left-click / drag to select, right-click to move, attack or gather. **A** attack-move, **S** stop,
 **H** hold, **P** patrol; on workers **B** opens the basic build menu and **V** the advanced one.
 **Ctrl+1–9** assigns a control group and **1–9** selects it. **F1** selects an idle worker, **Space**
-jumps to the last alert, **Esc** opens the menu. Move the camera with the arrow keys, the screen edges or
+jumps to the last alert, **F5** quicksaves, **F9** quickloads, **Esc** opens the menu. Move the camera with the arrow keys, the screen edges or
 middle-drag; zoom with the wheel; Alt+wheel rotates.
 
 ## Tests

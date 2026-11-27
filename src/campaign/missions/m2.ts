@@ -12,7 +12,7 @@ import { angleOf, dist, sub } from '../../core/math';
 import type { Entity, Vec2 } from '../../core/types';
 import type { MissionInfo } from '../index';
 import {
-  byDifficulty, line, lerpPoint, polar, scaleComposition, ScriptedMission, type Composition,
+  byDifficulty, line, lerpPoint, polar, refOf, scaleComposition, ScriptedMission, type Composition, type SavedRef,
 } from '../script';
 
 export const M2_INFO: MissionInfo = {
@@ -100,9 +100,8 @@ export class ContainmentBreach extends ScriptedMission {
   private satsDown = 0;
   private labHits = 0;
 
-  protected build(): void {
+  protected spawn(): void {
     const s = this.script, P = s.playerId, E = s.enemyId, d = s.difficulty, T = M2_TUNING;
-    s.setLighting('night');
     s.spawnMapResources();
     s.setResources(P, { matter: T.startSupplies, energy: T.startPower });
     s.setResources(E, { matter: 300, energy: 100 });
@@ -141,7 +140,16 @@ export class ContainmentBreach extends ScriptedMission {
     s.setAiFlags({ economy: true, build: true, army: true, attack: true, expand: d === 'hard' || d === 'brutal', defend: true });
     const foe = s.world.players.get(E);
     if (foe) foe.gatherMul *= byDifficulty(d, M2_TUNING.aiGatherMul);
+  }
 
+  protected scriptMission(): void {
+    const s = this.script;
+    s.setLighting('night');
+    s.defineAction('retaliation', () => {
+      if (s.finished) return;
+      s.sendWave(M2_TUNING.retaliation, 'wave_spawn_north', { name: 'm2-retaliation', tags: ['retaliation'] });
+      s.bark(M2_LINES.retaliation, 15);
+    });
     this.scriptObjectives();
     this.scriptTimer();
     this.scriptRaids();
@@ -161,7 +169,23 @@ export class ContainmentBreach extends ScriptedMission {
     s.after(Math.max(0.5, ends[0]! - 0.5), () => s.panTo(east, 2.5), 'intro-east');
     s.after(Math.max(1, ends[1]! - 2.5), () => s.panTo(west, 2.5), 'intro-west');
     s.after(Math.max(1.5, ends[2]! - 0.5), () => s.panTo(home, 3), 'intro-home');
-    s.after(ends[3]! + 0.5, () => s.hint(M2_HINTS.shield, { id: 'shield' }), 'hint-shield');
+    s.hintLater(ends[3]! + 0.5, M2_HINTS.shield, 'shield');
+  }
+
+  protected saveState(): Record<string, unknown> {
+    return {
+      hq: refOf(this.hq), lab: refOf(this.lab), mainCore: refOf(this.mainCore), east: refOf(this.sats.east), west: refOf(this.sats.west),
+      satsDown: this.satsDown, labHits: this.labHits,
+    };
+  }
+
+  protected loadState(d: Record<string, unknown>): void {
+    this.hq = this.deref(d.hq as SavedRef);
+    this.lab = this.deref(d.lab as SavedRef);
+    this.mainCore = this.deref(d.mainCore as SavedRef);
+    this.sats = { east: this.deref(d.east as SavedRef), west: this.deref(d.west as SavedRef) };
+    this.satsDown = d.satsDown as number;
+    this.labHits = d.labHits as number;
   }
 
   // ───────────────────────── setup helpers ─────────────────────────
@@ -262,11 +286,7 @@ export class ContainmentBreach extends ScriptedMission {
     if (this.satsDown === 1) {
       s.bark(M2_LINES.firstSat, 20);
       // The Contagion lashes out after losing its first satellite.
-      s.after(20, () => {
-        if (s.finished) return;
-        s.sendWave(M2_TUNING.retaliation, 'wave_spawn_north', { name: 'm2-retaliation', tags: ['retaliation'] });
-        s.bark(M2_LINES.retaliation, 15);
-      }, 'retaliation');
+      s.schedule(20, 'retaliation');
     }
   }
 

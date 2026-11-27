@@ -2,6 +2,9 @@
 export class Rng {
   private s: number;
   constructor(seed = 1) { this.s = (seed >>> 0) || 0x9e3779b9; }
+  /** Save-game support: the full generator state is one 32-bit integer. */
+  getState(): number { return this.s; }
+  setState(state: number): void { this.s = state >>> 0; }
   next(): number {
     let t = (this.s = (this.s + 0x6d2b79f5) >>> 0);
     t = Math.imul(t ^ (t >>> 15), t | 1);

@@ -68,30 +68,54 @@ export class PlacementGhostView {
     let model: EntityModel;
     try { model = createEntityModel(ctx); if (!model?.root) throw new Error('no root'); } catch { model = placeholderModel(ctx); }
     // translucent per-ghost material copies (the originals are shared with live buildings)
-    const cloneMap = new Map<THREE.Material, THREE.Material>();
+    this.cloneMap = new Map();
     model.root.traverse((o) => {
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;
       m.castShadow = false; m.receiveShadow = false;
       m.renderOrder = 5;
-      const swap = (src: THREE.Material): THREE.Material => {
-        let c = cloneMap.get(src);
-        if (!c) {
-          c = src.clone();
-          c.transparent = true;
-          c.depthWrite = true;
-          (c as Tintable).opacity = Math.min((src as Tintable).opacity ?? 1, 0.55);
-          cloneMap.set(src, c);
-          this.clones.push(c as Tintable);
-        }
-        return c;
-      };
-      m.material = Array.isArray(m.material) ? m.material.map(swap) : swap(m.material);
     });
+    this.model = model;
+    this.applyGhostMaterials();
     model.root.rotation.order = 'YXZ';
     model.root.visible = false;
-    this.model = model;
     this.scene.add(model.root);
+  }
+
+  /** src material → ghost material (also contains ghost→ghost so re-application is idempotent) */
+  private cloneMap = new Map<THREE.Material, THREE.Material>();
+
+  /**
+   * Swap every mesh material for its translucent ghost copy. Re-run after model.update(): models may
+   * reassign mesh.material to cached state variants every frame.
+   */
+  private applyGhostMaterials(): void {
+    const model = this.model;
+    if (!model) return;
+    const swap = (src: THREE.Material): THREE.Material => {
+      let c = this.cloneMap.get(src);
+      if (!c) {
+        // plain translucent standard material keeping the source's map / colour / vertex colours: custom
+        // (onBeforeCompile / atlas) shaders may force alpha = 1, which would hide the tile grid
+        const s0 = src as THREE.Material & { map?: THREE.Texture | null; color?: THREE.Color; vertexColors?: boolean };
+        const g = new THREE.MeshStandardMaterial({
+          map: s0.map ?? null, color: s0.color ? s0.color.clone() : new THREE.Color(0xffffff), vertexColors: !!s0.vertexColors,
+          roughness: 0.6, metalness: 0.1, transparent: true, opacity: 0.4, depthWrite: true, side: src.side,
+        });
+        c = g;
+        this.cloneMap.set(src, g);
+        this.cloneMap.set(g, g);
+        this.clones.push(g as Tintable);
+      }
+      return c;
+    };
+    model.root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || !m.material) return;
+      if (Array.isArray(m.material)) { if (m.material.some((x) => this.cloneMap.get(x) !== x)) m.material = m.material.map(swap); }
+      else if (this.cloneMap.get(m.material) !== m.material) m.material = swap(m.material);
+      m.castShadow = false;
+    });
   }
 
   /** Per-tile check: buildable & free of static/dynamic blockers and ground units (except ignored ids). */
@@ -133,10 +157,11 @@ export class PlacementGhostView {
     const pulse = 0.5 + 0.5 * Math.sin(time * 4.5);
     const tint = this.valid ? this.tintValid : this.tintInvalid;
     for (const m of this.clones) {
-      m.opacity = 0.42 + 0.1 * pulse;
+      m.opacity = 0.34 + 0.1 * pulse;
       if (m.emissive) { m.emissive.copy(tint); m.emissiveIntensity = 0.7 + 0.4 * pulse; }
     }
     try { model.update(GHOST_STATE, dt, time); } catch { /* preview only */ }
+    this.applyGhostMaterials();
 
     // ── footprint tiles ──
     let anyBad = false;
@@ -163,6 +188,7 @@ export class PlacementGhostView {
     }
     for (const c of this.clones) c.dispose();
     this.clones = [];
+    this.cloneMap = new Map();
     this.model = null;
     this.defId = null;
     this.def = null;

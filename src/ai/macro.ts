@@ -15,7 +15,7 @@ import type { Base, Brain, Site } from './brain';
 import { armyGoal, type ArmyGoal } from './composition';
 import { DRONE, HIVE, NEST, PIT, REPLICATOR, SPIRE, SPITTER, UP_METABOLISM, VAT, type PlanState } from './personality';
 import { findBuildSpot, findHiveSpot, type Lane, type Spot } from './placement';
-import { hasWeapons, type Rect } from './util';
+import { assignFields, hasWeapons, pickFields, type Rect } from './util';
 
 type SiteSpec =
   | { kind: 'main' }
@@ -54,6 +54,10 @@ export class MacroManager {
   private chores = 0;
 
   constructor(private b: Brain) {}
+
+  private static readonly SAVED = ['placeFailUntil', 'extraVats', 'nextVatBoost', 'energyBlockedAt', 'slipUntil', 'slipRolledAt', 'chores', 'explorer', 'plan'] as const;
+  saveState(): Record<string, unknown> { return pickFields(this as unknown as Record<string, unknown>, MacroManager.SAVED as unknown as string[]); }
+  loadState(d: unknown): void { assignFields(this as unknown as Record<string, unknown>, d, MacroManager.SAVED as unknown as string[]); }
 
   think(): void {
     const b = this.b;

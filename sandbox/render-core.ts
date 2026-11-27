@@ -10,6 +10,8 @@
  *   markers=1  all command marker kinds, re-triggered      fight=1   enemies attack-move into the army
  *   pause=1    freeze the sim               t=<sec>   pre-simulate before the first frame
  *   cx,cy,dist,yaw   camera                 kill=1    kill a few units after 1.5 s (death animation)
+ *   fog=1      keep fog of war (default: revealed)
+ *   still=<sec> stop the loop after <sec> s of wall time (headless screenshots need an idle page)
  * Debug handle: window.__rc = { renderer, world, settings }.
  */
 import { TICK_DT } from '../src/config';
@@ -76,6 +78,8 @@ const enemy: Entity[] = [
 ];
 world.spawnBuilding('path_toxin_spitter', ENEMY, { x: 51, y: 53 }, { complete: true });
 
+if (q.get('fog') !== '1') world.vision.revealAll(LOCAL, true); // ?fog=1 keeps the real fog of war
+
 // ── pre-simulate (workers start carrying) ──
 const preSim = num('t', 3);
 for (let i = 0; i < Math.round(preSim / TICK_DT); i++) world.step();
@@ -115,7 +119,10 @@ const paused = q.get('pause') === '1';
 const info = document.getElementById('rc-info') as HTMLDivElement;
 let last = performance.now(), acc = 0, fpsT = 0, frames = 0, fps = 0, clock = 0;
 
+const stillAt = q.has('still') ? num('still', 4) * 1000 : Infinity;
+const startedAt = performance.now();
 function frame(now: number): void {
+  if (now - startedAt > stillAt) { document.title = 'render-core: still'; return; }
   requestAnimationFrame(frame);
   const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
   last = now;

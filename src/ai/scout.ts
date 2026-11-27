@@ -24,6 +24,15 @@ export class ScoutManager {
 
   get scoutId(): EntityId | null { return this.id; }
 
+  saveState(): Record<string, unknown> {
+    return { trips: this.trips, id: this.id, route: this.route, idx: this.idx, startedAt: this.startedAt, issuedAt: this.issuedAt, earlyDone: this.earlyDone, nextAt: this.nextAt };
+  }
+  loadState(data: unknown): void {
+    const d = (data ?? {}) as Partial<Record<'trips' | 'idx' | 'startedAt' | 'issuedAt' | 'nextAt', number>> & { id?: EntityId | null; route?: Vec2[]; earlyDone?: boolean };
+    this.trips = d.trips ?? 0; this.id = d.id ?? null; this.route = d.route ?? []; this.idx = d.idx ?? 0;
+    this.startedAt = d.startedAt ?? 0; this.issuedAt = d.issuedAt ?? 0; this.earlyDone = d.earlyDone ?? false; this.nextAt = d.nextAt ?? this.nextAt;
+  }
+
   think(): void {
     const b = this.b, t = b.world.time;
     if (!b.flags.attack) { this.finish(); return; }

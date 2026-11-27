@@ -29,42 +29,61 @@ const MODE_NONE = 0, MODE_POINT = 1, MODE_ENTITY = 2;
 const ANCHOR_ACTIVITIES: ReadonlySet<string> = new Set(['attacking', 'building', 'gathering', 'casting', 'healing']);
 const ARRIVE_EPS = 0.1;
 
-/** Per-unit movement state (entity.ext.movement). A class so every unit shares one hidden shape. */
-export class MoveExt {
-  mode = MODE_NONE;
-  /** Requested point (point mode) — repeated moveTo calls compare against it. */
-  reqX = 0; reqY = 0;
-  /** Effective goal the unit steers to (closest reachable point / approach point / target position). */
-  gx = 0; gy = 0;
-  arrive = K.DEFAULT_ARRIVE;
-  targetId: EntityId = -1;
-  range = 0;
-  targetIsUnit = false;
-  cls = 1;
-  /** Request generation: queued requests carrying an older generation are discarded. */
-  gen = 0;
-  pending = false;
-  hasPath = false;
-  /** Following a unit target in a straight line (path[0] tracks the target). */
-  direct = false;
-  unreachable = false;
-  gaveUp = false;
-  /** Target position the current path was planned for (moving-target drift). */
-  ptx = 0; pty = 0;
-  groupId = 0; groupR = 0;
-  pendGroup = 0; pendSX = 0; pendSY = 0;
-  lastGX = 0; lastGY = 0; lastGoalT = -1e9;
-  ancX = 0; ancY = 0; ancT = 0;
-  repathT = -1e9;
-  endT = 0;
-  arrT = -1e9; arrX = 0; arrY = 0;
-  /** Path bounding box (incl. start) for invalidation when footprints change. */
-  bx0 = 0; by0 = 0; bx1 = 0; by1 = 0;
+/**
+ * Per-unit movement state (entity.ext.movement). PLAIN DATA (save codec): numbers/booleans only, entity
+ * references as ids. Field meanings: req* requested point (repeat moveTo compares against it) · g* effective
+ * goal · gen request generation (queued requests with another gen are stale) · direct = straight-line chase
+ * of a unit target · pt* target position the path was planned for · pend* group slot from groupTargets ·
+ * lastGX/lastGY/lastGoalT last arrival goal (chain arrival) · anc* progress sampling · b* path bbox.
+ */
+export interface MoveExt {
+  mode: number;
+  reqX: number;
+  reqY: number;
+  gx: number;
+  gy: number;
+  arrive: number;
+  targetId: number;
+  range: number;
+  targetIsUnit: boolean;
+  cls: number;
+  gen: number;
+  pending: boolean;
+  hasPath: boolean;
+  direct: boolean;
+  unreachable: boolean;
+  gaveUp: boolean;
+  ptx: number;
+  pty: number;
+  groupId: number;
+  groupR: number;
+  pendGroup: number;
+  pendSX: number;
+  pendSY: number;
+  lastGX: number;
+  lastGY: number;
+  lastGoalT: number;
+  ancX: number;
+  ancY: number;
+  ancT: number;
+  repathT: number;
+  endT: number;
+  arrT: number;
+  arrX: number;
+  arrY: number;
+  bx0: number;
+  by0: number;
+  bx1: number;
+  by1: number;
+}
+
+export function newMoveExt(): MoveExt {
+  return { mode: MODE_NONE, reqX: 0, reqY: 0, gx: 0, gy: 0, arrive: K.DEFAULT_ARRIVE, targetId: -1, range: 0, targetIsUnit: false, cls: 1, gen: 0, pending: false, hasPath: false, direct: false, unreachable: false, gaveUp: false, ptx: 0, pty: 0, groupId: 0, groupR: 0, pendGroup: 0, pendSX: 0, pendSY: 0, lastGX: 0, lastGY: 0, lastGoalT: -1e9, ancX: 0, ancY: 0, ancT: 0, repathT: -1e9, endT: 0, arrT: -1e9, arrX: 0, arrY: 0, bx0: 0, by0: 0, bx1: 0, by1: 0 };
 }
 
 function extOf(e: Entity): MoveExt {
   let x = e.ext.movement as MoveExt | undefined;
-  if (!x) { x = new MoveExt(); e.ext.movement = x; }
+  if (!x) { x = newMoveExt(); e.ext.movement = x; }
   return x;
 }
 
@@ -92,6 +111,17 @@ function pointRectDist(px: number, py: number, rx: number, ry: number, rw: numbe
 }
 
 interface GroupRec { id: number; cx: number; cy: number; radius: number; time: number }
+
+/** Save-participant payload for the 'movement' key. */
+export interface MovementSave {
+  tickNo: number;
+  queue: { ids: number[]; gens: number[] };
+  groups: GroupRec[];
+  groupSeq: number;
+  navVersion: number;
+  fields: FlowField[];
+  stats: MovementStats;
+}
 
 export interface MovementStats {
   /** A* searches, field-served paths, straight-line shortcuts, Dijkstra fields built. */
@@ -554,6 +584,7 @@ export class MovementController implements MovementService {
 
   /** Walkability changed under a footprint: re-plan movers whose path/goal it touches. */
   private onNavChanged(tx: number, ty: number, w: number, h: number, blocked: boolean): void {
+    if (this.world.restoring) return; // load: footprints are re-stamped under fully restored unit state
     const x0 = tx - 1.5, y0 = ty - 1.5, x1 = tx + w + 1.5, y1 = ty + h + 1.5;
     for (const e of this.world.list) {
       const m = e.mover;
@@ -924,6 +955,35 @@ export class MovementController implements MovementService {
     const near = this.distGoal[i]! <= this.bumpRadius(x, e.radius) + 1.5;
     if (m.blockedTime >= (near ? K.GIVE_UP_NEAR : K.GIVE_UP_FAR)) { this.arriveNow(e, m, x, true); return; }
     if (m.blockedTime >= K.REPATH_BLOCKED && !m.flying && this.world.time - x.repathT > K.REPATH_COOLDOWN) this.replan(e, m, x);
+  }
+
+  // ═════════════════════════ save / load ═════════════════════════
+
+  /** Everything besides entity.ext.movement that affects future ticks (codec-safe plain data). */
+  saveState(): MovementSave {
+    return {
+      tickNo: this.tickNo,
+      queue: { ids: this.qIds.slice(this.qHead), gens: this.qGens.slice(this.qHead) },
+      groups: [...this.groups.values()].map((g) => ({ ...g })),
+      groupSeq: this.groupSeq,
+      navVersion: this.nav.version,
+      // the whole pool (stale entries too): LRU eviction order must match after load
+      fields: this.pool.map((f) => ({ key: f.key, version: f.version, source: f.source, cls: f.cls, dist: f.dist, parent: f.parent, lastUsed: f.lastUsed })),
+      stats: { ...this.stats },
+    };
+  }
+
+  /** Called after all entities are restored (their footprints already re-stamped). */
+  loadState(d: MovementSave): void {
+    this.tickNo = d.tickNo;
+    this.qIds = [...d.queue.ids]; this.qGens = [...d.queue.gens]; this.qHead = 0;
+    this.groups.clear();
+    for (const g of d.groups) this.groups.set(g.id, { ...g });
+    this.groupSeq = d.groupSeq;
+    this.nav.restoreVersion(d.navVersion);
+    this.pool.length = 0;
+    for (const f of d.fields) this.pool.push({ ...f });
+    Object.assign(this.stats, d.stats);
   }
 
   // ═════════════════════════ debug / tests ═════════════════════════

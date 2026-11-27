@@ -9,6 +9,24 @@ import { AbilityServiceImpl } from './abilities';
 import { HELP_CELL, HELP_WINDOW } from './constants';
 import { CombatServiceImpl } from './service';
 import { helpKey } from './state';
+import { getDef } from '../../data';
+
+export interface CombatSave {
+  proj: Array<{ id: number; sourceId: EntityId; ghost: Record<string, unknown> | null; damageAdd: number; damageMul: number; traveled: number; launchedAt: number }>;
+  delayed: DelayedEffect[];
+  helpCalls: Array<[number, HelpCall]>;
+}
+
+/** Entity fields minus def/tags (same shape the core save uses). */
+function ghostFields(e: Entity): Record<string, unknown> {
+  const { def: _d, tags: _t, ...rest } = e as unknown as Record<string, unknown>;
+  return rest;
+}
+/** A detached (dead, unregistered) entity used only as damage credit for in-flight shots. */
+function rebuildGhost(f: Record<string, unknown>): Entity {
+  const def = getDef(f.defId as string);
+  return { ...f, def, tags: new Set(def.kind === 'resource' ? [] : def.tags) } as unknown as Entity;
+}
 
 /** Launch-time snapshot of a projectile's source (it may die before impact). */
 export interface ProjectileMeta {
@@ -21,7 +39,8 @@ export interface ProjectileMeta {
   launchedAt: number;
 }
 
-export interface DelayedEffect { at: number; run: () => void }
+/** Delayed ability effect — plain data so it survives save/load. */
+export interface DelayedEffect { at: number; kind: 'supplyDrop'; casterId: EntityId; owner: number; amount: number }
 
 const PRESENCE_CELL = 8;
 /** building half-extent (≤ 3 for the 6×6 objective) + a tick of movement */
@@ -112,7 +131,15 @@ export class CombatRuntime {
     for (const [k, h] of this.helpCalls) if (now - h.time > HELP_WINDOW) this.helpCalls.delete(k);
   }
 
-  schedule(delay: number, run: () => void): void { this.delayed.push({ at: this.world.time + delay, run }); }
+  schedule(delay: number, fx: Omit<DelayedEffect, 'at'>): void { this.delayed.push({ at: this.world.time + delay, ...fx }); }
+
+  private runEffect(d: DelayedEffect): void {
+    if (d.kind === 'supplyDrop') {
+      const caster = this.world.getAlive(d.casterId);
+      if (!this.active || !caster || caster.owner !== d.owner) return; // HQ lost before the drop
+      this.world.economy.addResources(d.owner, { matter: d.amount });
+    }
+  }
 
   runDelayed(): void {
     if (this.delayed.length === 0) return;
@@ -123,7 +150,7 @@ export class CombatRuntime {
     this.delayed.length = 0;
     this.delayed.push(...keep);
     for (const d of due) {
-      try { d.run(); } catch (err) { console.error('[combat] delayed effect threw', err); }
+      try { this.runEffect(d); } catch (err) { console.error('[combat] delayed effect threw', err); }
     }
   }
 
@@ -132,6 +159,35 @@ export class CombatRuntime {
     if (this.projMeta.size <= this.world.projectiles.length) return;
     const live = new Set(this.world.projectiles.map((p) => p.id));
     for (const id of this.projMeta.keys()) if (!live.has(id)) this.projMeta.delete(id);
+  }
+
+  // ───────────── save / load (SaveParticipant 'combat') ─────────────
+  /** Everything here that affects future ticks, as codec-safe data. Per-entity state is in entity.ext.combat. */
+  saveState(): CombatSave {
+    const w = this.world;
+    const proj: CombatSave['proj'] = [];
+    for (const [id, m] of this.projMeta) {
+      // the shooter may already be removed from the world (died) yet still gets kill credit: keep a ghost
+      const ghost = w.get(m.source.id) === m.source ? null : ghostFields(m.source);
+      proj.push({ id, sourceId: m.source.id, ghost, damageAdd: m.damageAdd, damageMul: m.damageMul, traveled: m.traveled, launchedAt: m.launchedAt });
+    }
+    return { proj, delayed: this.delayed.map((d) => ({ ...d })), helpCalls: [...this.helpCalls.entries()].map(([k, h]) => [k, { ...h }]) };
+  }
+
+  loadState(data: CombatSave): void {
+    this.projMeta.clear();
+    this.delayed.length = 0;
+    this.helpCalls.clear();
+    if (!data) return;
+    const ghosts = new Map<number, Entity>();
+    for (const m of data.proj ?? []) {
+      let src = this.world.get(m.sourceId) ?? ghosts.get(m.sourceId);
+      if (!src && m.ghost) { src = rebuildGhost(m.ghost); ghosts.set(m.sourceId, src); }
+      if (!src) continue; // stepProjectile falls back to world.get(sourceId)
+      this.projMeta.set(m.id, { source: src, damageAdd: m.damageAdd, damageMul: m.damageMul, traveled: m.traveled, launchedAt: m.launchedAt });
+    }
+    for (const d of data.delayed ?? []) this.delayed.push({ ...d });
+    for (const [k, h] of data.helpCalls ?? []) this.helpCalls.set(k, { ...h });
   }
 
   dispose(): void {

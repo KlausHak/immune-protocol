@@ -5,6 +5,8 @@
  * ECG sweep. The static scene is pre-rendered on resize; each frame is one drawImage + a few dozen sprites.
  */
 
+import { isSoftwareGpu } from '../styles';
+
 interface Microbe { sprite: number; x: number; y: number; z: number; vx: number; vy: number; rot: number; vr: number; phase: number }
 interface Flake { x: number; y: number; r: number; v: number; drift: number }
 
@@ -49,6 +51,7 @@ export class MenuBackground {
   private h = 0;
   private dpr = 1;
   private ecgHead = 0;
+  private soft = isSoftwareGpu();
 
   constructor(parent: HTMLElement) {
     this.canvas = document.createElement('canvas');
@@ -98,6 +101,8 @@ export class MenuBackground {
   private frame = (now: number): void => {
     if (!this.running) return;
     this.raf = requestAnimationFrame(this.frame);
+    // software rasterisers (no GPU): a few fps is plenty and keeps the page responsive
+    if (this.soft && now - this.last < 250) return;
     const dt = Math.min(0.05, Math.max(0, (now - this.last) / 1000));
     this.last = now;
     this.t += dt;

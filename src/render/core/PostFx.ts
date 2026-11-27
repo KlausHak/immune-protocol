@@ -166,7 +166,7 @@ class ScaledBloomPass extends UnrealBloomPass {
 /** Keep the bloom mip chain's base (half of the input) around ≤ 960 px wide: bloom is soft anyway. */
 function bloomScale(widthPx: number): number { return Math.min(1, 1920 / Math.max(1, widthPx)); }
 
-export const BLOOM_DEFAULTS = { strength: 0.6, radius: 0.5, threshold: 1.0 } as const;
+export const BLOOM_DEFAULTS = { strength: 0.55, radius: 0.5, threshold: 1.15 } as const;
 
 export class PostFx {
   private composer: EffectComposer | null = null;

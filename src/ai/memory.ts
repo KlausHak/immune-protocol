@@ -71,6 +71,20 @@ export class EnemyMemory {
 
   constructor(private b: Brain) {}
 
+  saveState(): Record<string, unknown> {
+    return { structures: this.structures, units: this.units, firstContact: this.firstContact, looked: this.looked, points: this.points };
+  }
+
+  loadState(data: unknown): void {
+    const d = (data ?? {}) as { structures?: Map<EntityId, SeenStructure>; units?: Map<EntityId, SeenUnit>; firstContact?: number; looked?: Map<string, number>; points?: Vec2[] };
+    this.structures.clear(); for (const [k, v] of d.structures ?? []) this.structures.set(k, v);
+    this.units.clear(); for (const [k, v] of d.units ?? []) this.units.set(k, v);
+    this.firstContact = d.firstContact ?? -1;
+    this.looked = d.looked ?? new Map();
+    this.points = d.points ?? [];
+    this.intelCache = null;
+  }
+
   setInterestPoints(points: Vec2[]): void { this.points = points.map(clone); }
 
   /** Last time we had eyes on p (-1 = never). Only tracked for interest points. */

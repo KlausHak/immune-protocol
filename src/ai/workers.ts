@@ -13,6 +13,9 @@ export class WorkerManager {
 
   constructor(private b: Brain) {}
 
+  saveState(): Record<string, unknown> { return { lastRebalance: this.lastRebalance }; }
+  loadState(d: unknown): void { const v = (d as { lastRebalance?: number } | null)?.lastRebalance; if (typeof v === 'number') this.lastRebalance = v; }
+
   think(): void {
     const b = this.b;
     if (!b.flags.economy) return;

@@ -23,6 +23,8 @@ import { notEnoughText } from './format';
 import { iconHtml } from './icons';
 import { ensureUiStyles } from './styles';
 import { Tooltip } from './tooltip';
+import { confirmModal, errText, fmtDate, globalToast } from './saveLoad';
+import { fmtClock } from './format';
 import { CommandCard } from './hud/commandCard';
 import { DialogueBox } from './hud/dialogue';
 import { Minimap } from './hud/minimap';
@@ -63,6 +65,9 @@ export class Hud implements GameUi {
   private errors = new Map<string, number>();
   private lastAttackToast = -999;
   private disposed = false;
+  private savingEl: HTMLDivElement;
+  private quickBusy = false;
+  private confirmOpen = false;
 
   constructor(private root: HTMLElement, private game: GameContext) {
     ensureUiStyles();
@@ -101,7 +106,10 @@ export class Hud implements GameUi {
     };
 
     // overlays
-    this.pause = new PauseMenu(this.el, game, (k) => this.sound(k));
+    this.pause = new PauseMenu(this.el, game, (k) => this.sound(k), (t, k) => (this.disposed ? globalToast(t, k) : this.notes.toast(t, k)));
+    this.savingEl = el('div', 'ip-saving', this.el, 'Saving…');
+    this.savingEl.dataset.testid = 'saving';
+    this.savingEl.style.display = 'none';
     this.end = new EndScreen(this.el, game, (k) => this.sound(k));
 
     window.addEventListener('keydown', this.onKeyCapture, true);
@@ -135,7 +143,7 @@ export class Hud implements GameUi {
 
   /** Most recent located alert (for "jump to last alert"). */
   get lastAlertPos(): Vec2 | null { return this.notes.lastAlertPos; }
-  get isModalOpen(): boolean { return this.pause.isOpen || this.end.isOpen; }
+  get isModalOpen(): boolean { return this.pause.isOpen || this.end.isOpen || this.confirmOpen; }
 
   update(dtReal: number): void {
     if (this.disposed) return;
@@ -149,6 +157,10 @@ export class Hud implements GameUi {
     this.safe('dialogue', () => this.dialogue.update(dtReal, g.paused));
     this.safe('idle', () => this.updateIdle(dtReal));
     setClass(this.el, 'ip-paused', g.paused);
+    // saving indicator (manual saves, quicksaves and the Game's silent autosave all set game.saving)
+    const saving = !!(g as unknown as { saving?: boolean }).saving || this.quickBusy;
+    const shown = this.savingEl.style.display !== 'none';
+    if (saving !== shown) this.savingEl.style.display = saving ? '' : 'none';
   }
 
   dispose(): void {
@@ -177,6 +189,16 @@ export class Hud implements GameUi {
 
   /** Capture-phase keys: modal screens swallow game hotkeys; F10 opens the menu as a fallback. */
   private onKeyCapture = (e: KeyboardEvent): void => {
+    // an inline/modal confirmation owns the keyboard (it has its own Enter/Escape handling)
+    if (this.confirmOpen || document.querySelector('.ip-confirm-ov')) { e.stopPropagation(); return; }
+    if (e.key === 'F5' || e.key === 'F9') {
+      e.preventDefault(); // never reload the page / open devtools shortcuts
+      const t = e.target as HTMLElement | null;
+      if (e.repeat || (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable))) return;
+      e.stopPropagation();
+      if (e.key === 'F5') void this.quickSave(); else void this.quickLoad();
+      return;
+    }
     // stopPropagation keeps game hotkeys from firing behind a modal; native defaults (Enter/Space on the
     // focused button, Tab focus, slider keys) still apply because we only preventDefault what we handle.
     if (this.pause.isOpen) {
@@ -191,6 +213,44 @@ export class Hud implements GameUi {
     }
     if (e.key === 'F10') { e.preventDefault(); this.openPauseMenu(); }
   };
+
+  /** F5: save to the Quicksave slot. */
+  private async quickSave(): Promise<void> {
+    const g = this.game;
+    if (this.quickBusy || this.disposed) return;
+    if (!g.canSave()) { this.notes.toast('Cannot save — the match has ended', 'warning'); this.sound('error'); return; }
+    this.quickBusy = true;
+    try {
+      const meta = await g.saveGame('quick', `Quicksave · ${g.mission?.info.title ?? g.map.name}`);
+      if (!this.disposed) { this.notes.toast(`Game saved — Quicksave ${fmtClock(meta.gameTime)}`, 'success'); this.sound('confirm'); }
+    } catch (err) {
+      if (!this.disposed) { this.notes.toast(`Save failed: ${errText(err)}`, 'warning'); this.sound('error'); }
+    } finally { this.quickBusy = false; }
+  }
+
+  /** F9: load the Quicksave after confirmation (game paused while asking). */
+  private async quickLoad(): Promise<void> {
+    const g = this.game;
+    if (this.confirmOpen || this.disposed) return;
+    let meta = null;
+    try { meta = (await g.app.saves.list()).find((m) => m.slot === 'quick') ?? null; } catch (err) { this.notes.toast(`Could not read saves: ${errText(err)}`, 'warning'); return; }
+    if (!meta) { this.notes.toast('No quicksave yet — press F5 to quicksave', 'warning'); this.sound('error'); return; }
+    if (this.end.isOpen || this.pause.isOpen) { this.pause.openPanel('load'); return; }
+    const wasPaused = g.paused;
+    g.pause();
+    this.confirmOpen = true;
+    this.tip.hide();
+    const ok = await confirmModal(this.el, 'Quickload?', `Load “${meta.name}” (${fmtClock(meta.gameTime)} played, saved ${fmtDate(meta.savedAt)})? Unsaved progress will be lost.`, 'Load', true);
+    this.confirmOpen = false;
+    if (!ok) { if (!wasPaused && !this.disposed) g.resume(); return; }
+    this.sound('confirm');
+    try { await g.app.loadGame('quick'); }
+    catch (err) {
+      // the App falls back to the menu if the new match can't start; toast where we can
+      if (!this.disposed) { this.notes.toast(`Quickload failed: ${errText(err)}`, 'warning'); if (!wasPaused) g.resume(); }
+      else globalToast(`Quickload failed: ${errText(err)}`, 'warning');
+    }
+  }
 
   private subscribe(): void {
     const g = this.game, ev = g.world.events, local = g.localPlayerId;

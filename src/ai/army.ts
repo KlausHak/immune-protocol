@@ -11,7 +11,7 @@ import type { Entity, EntityId, UnitDef, Vec2 } from '../core/types';
 import type { Brain, Site, Snapshot } from './brain';
 import { REPLICATOR, SPIRE } from './personality';
 import {
-  canHitGround, centroid, closestIndex, combatValue, costValue, hasWeapons, hpFrac, indexAhead, indexBehind, isAir, isRanged, isWorkerUnit, minRangeOf,
+  assignFields, canHitGround, centroid, pickFields, closestIndex, combatValue, costValue, hasWeapons, hpFrac, indexAhead, indexBehind, isAir, isRanged, isWorkerUnit, minRangeOf,
 } from './util';
 
 type SquadState = 'advance' | 'engage' | 'siege' | 'retreat' | 'return';
@@ -80,6 +80,10 @@ export class WavePlanner {
 
   onLaunched(): void { this.launched++; }
 
+  private static readonly SAVED = ['launched', 'earliest', 'latest', 'size', 'minValue', 'lastOutcome'] as const;
+  saveState(): Record<string, unknown> { return pickFields(this as unknown as Record<string, unknown>, WavePlanner.SAVED as unknown as string[]); }
+  loadState(d: unknown): void { assignFields(this as unknown as Record<string, unknown>, d, WavePlanner.SAVED as unknown as string[]); }
+
   onEnded(t: number, outcome: WaveOutcome): void {
     this.lastOutcome = outcome;
     const back = outcome === 'retreat' || outcome === 'recall';
@@ -98,6 +102,19 @@ export class ArmyManager {
   private kiting = new Map<EntityId, number>();
 
   constructor(private b: Brain) { this.waves = new WavePlanner(b); }
+
+  /** [save] squads are plain data already (ids, points, maps) */
+  saveState(): Record<string, unknown> {
+    return { squad: this.squad, waves: this.waves.saveState(), homeSent: this.homeSent, regenSent: this.regenSent, kiting: this.kiting };
+  }
+  loadState(data: unknown): void {
+    const d = (data ?? {}) as { squad?: Squad | null; waves?: unknown; homeSent?: Map<EntityId, number>; regenSent?: Map<EntityId, number>; kiting?: Map<EntityId, number> };
+    this.squad = d.squad ?? null;
+    this.waves.loadState(d.waves);
+    this.homeSent = d.homeSent ?? new Map();
+    this.regenSent = d.regenSent ?? new Map();
+    this.kiting = d.kiting ?? new Map();
+  }
 
   /** Home army: controlled combat units with no role (not attacking, defending, scouting or healing up). */
   homeUnits(s: Snapshot = this.b.snap()): Entity[] { return s.army.filter((u) => !this.b.roles.has(u.id)); }

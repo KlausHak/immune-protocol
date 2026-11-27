@@ -11,6 +11,8 @@ import { el, esc } from '../dom';
 import { fmtClock } from '../format';
 import { glyphHtml } from '../icons';
 import { createSettingsPanel, type SettingsPanel } from '../settingsPanel';
+import { createLoadPanel, createSavePanel, type Panel } from '../saveLoad';
+import type { NotifyKind } from '../../core/ui';
 
 
 function button(parent: HTMLElement, label: string, glyph: string, cls = '', key?: string): HTMLButtonElement {
@@ -33,11 +35,13 @@ function arrowFocus(container: HTMLElement, e: KeyboardEvent): boolean {
 
 export class PauseMenu {
   private el: HTMLDivElement | null = null;
-  private view: 'main' | 'settings' | 'confirm' = 'main';
+  private view: 'main' | 'settings' | 'confirm' | 'save' | 'load' = 'main';
   private settings: SettingsPanel | null = null;
+  private panel: Panel | null = null;
   private wasPaused = false;
 
-  constructor(private parent: HTMLElement, private game: GameContext, private sound: (k: UiSound) => void) {}
+  constructor(private parent: HTMLElement, private game: GameContext, private sound: (k: UiSound) => void,
+    private toast: (text: string, kind: NotifyKind) => void = () => {}) {}
 
   get isOpen(): boolean { return this.el !== null; }
 
@@ -57,6 +61,8 @@ export class PauseMenu {
     if (!this.el) return;
     this.settings?.dispose();
     this.settings = null;
+    this.panel?.dispose();
+    this.panel = null;
     this.el.remove();
     this.el = null;
     if (!this.wasPaused) this.game.resume();
@@ -74,6 +80,8 @@ export class PauseMenu {
   private card(cls: string): HTMLDivElement {
     this.settings?.dispose();
     this.settings = null;
+    this.panel?.dispose();
+    this.panel = null;
     this.el!.textContent = '';
     return el('div', `ip-panel ip-ecg ${cls}`, this.el!);
   }
@@ -86,6 +94,14 @@ export class PauseMenu {
     el('div', 'ip-flatline', c);
     const resume = button(c, 'Resume', 'ui.play', 'ip-btn-primary', 'Esc');
     resume.addEventListener('click', () => this.close());
+    const save = button(c, 'Save game', 'ui.flag', '', 'F5');
+    save.dataset.testid = 'pause-save';
+    save.disabled = !this.game.canSave();
+    if (save.disabled) save.title = 'The match has ended — nothing to save.';
+    save.addEventListener('click', () => { this.sound('click'); this.showSaveLoad('save'); });
+    const load = button(c, 'Load game', 'ui.restart', '', 'F9');
+    load.dataset.testid = 'pause-load';
+    load.addEventListener('click', () => { this.sound('click'); this.showSaveLoad('load'); });
     button(c, 'Settings', 'ui.sliders').addEventListener('click', () => { this.sound('click'); this.showSettings(); });
     button(c, this.game.mission ? 'Restart mission' : 'Restart match', 'ui.restart').addEventListener('click', () => { this.sound('click'); this.confirm('restart'); });
     button(c, 'Quit to main menu', 'ui.exit', 'ip-btn-danger').addEventListener('click', () => { this.sound('click'); this.confirm('quit'); });
@@ -127,6 +143,27 @@ export class PauseMenu {
     back.focus();
   }
 
+  /** Open the menu directly on the Save or Load panel. */
+  openPanel(kind: 'save' | 'load'): void {
+    this.open();
+    this.showSaveLoad(kind);
+  }
+
+  private showSaveLoad(kind: 'save' | 'load'): void {
+    this.view = kind;
+    const c = this.card('ip-set-card ip-save-card');
+    const head = el('div', 'ip-card-head', c);
+    head.innerHTML = glyphHtml(kind === 'save' ? 'ui.flag' : 'ui.restart');
+    el('h2', '', head, kind === 'save' ? 'Save game' : 'Load game');
+    const back = button(head, 'Back', 'ui.next', '', 'Esc');
+    back.querySelector('.ip-glyph')?.setAttribute('style', 'transform:scaleX(-1)');
+    back.addEventListener('click', () => { this.sound('click'); this.showMain(); });
+    const ctx = { app: this.game.app, game: this.game, toast: this.toast, sound: this.sound };
+    this.panel = kind === 'save' ? createSavePanel(ctx) : createLoadPanel(ctx);
+    c.appendChild(this.panel.el);
+    (c.querySelector<HTMLInputElement>('.ip-input:not([disabled])') ?? back).focus();
+  }
+
   /** Keyboard while open. Returns true when handled. */
   handleKey(e: KeyboardEvent): boolean {
     if (!this.el) return false;
@@ -139,6 +176,7 @@ export class PauseMenu {
 
   dispose(): void {
     this.settings?.dispose();
+    this.panel?.dispose();
     this.el?.remove();
     this.el = null;
   }

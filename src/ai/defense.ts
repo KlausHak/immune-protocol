@@ -23,6 +23,28 @@ export class DefenseManager {
 
   constructor(private b: Brain) {}
 
+  saveState(): Record<string, unknown> {
+    const threats = [...this.threats].map(([k, th]) => [k, {
+      zone: { key: th.zone.key, center: th.zone.center, radius: th.zone.radius, isMain: th.zone.isMain, base: th.zone.base?.hive.id ?? null },
+      pos: th.pos, value: th.value, units: th.units.map((e) => e.id), since: th.since, lastSeen: th.lastSeen,
+    }]);
+    return { threatValue: this.threatValue, responses: this.responses, threats, sent: this.sent };
+  }
+
+  loadState(data: unknown): void {
+    type Saved = { zone: { key: string; center: Vec2; radius: number; isMain: boolean; base: EntityId | null }; pos: Vec2; value: number; units: EntityId[]; since: number; lastSeen: number };
+    const d = (data ?? {}) as { threatValue?: number; responses?: number; threats?: Array<[string, Saved]>; sent?: Map<EntityId, { t: number; pos: Vec2 }> };
+    this.threatValue = d.threatValue ?? 0;
+    this.responses = d.responses ?? 0;
+    this.sent = d.sent ?? new Map();
+    this.threats.clear();
+    for (const [k, th] of d.threats ?? []) {
+      const base = th.zone.base == null ? null : this.b.bases.find((b) => b.hive.id === th.zone.base) ?? null;
+      const units = th.units.map((id) => this.b.world.get(id)).filter((e): e is Entity => !!e);
+      this.threats.set(k, { zone: { ...th.zone, base }, pos: th.pos, value: th.value, units, since: th.since, lastSeen: th.lastSeen });
+    }
+  }
+
   think(): void {
     const b = this.b;
     if (!b.flags.defend) { this.standDown(); this.threats.clear(); this.threatValue = 0; return; }

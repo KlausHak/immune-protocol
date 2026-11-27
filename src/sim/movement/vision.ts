@@ -19,6 +19,15 @@ import { VISION_INTERVAL } from './constants';
 
 interface Reveal { player: PlayerId; x: number; y: number; r: number; until: number }
 
+/** Save-participant payload for the 'vision' key (fog grids incl. explored state, timers, version). */
+export interface VisionSave {
+  ver: number;
+  grids: Map<PlayerId, Uint8Array>;
+  revealed: Set<PlayerId>;
+  reveals: Reveal[];
+  dirty: Set<PlayerId>;
+}
+
 /** entity.ext.vision */
 export interface VisionExt {
   /** Bit (1 << playerId) set once that player has seen this structure. */
@@ -133,6 +142,23 @@ export class FogOfWar implements VisionService {
       if (this.revealed.has(p.id)) { if (due) this.recordSightings(p.id, this.grid(p.id)); continue; }
       if (due || this.dirty.has(p.id)) { this.dirty.delete(p.id); this.recompute(p.id); }
     }
+  }
+
+  // ───────────────────────── save / load ─────────────────────────
+
+  saveState(): VisionSave {
+    return { ver: this.ver, grids: new Map(this.grids), revealed: new Set(this.revealed), reveals: this.reveals.map((r) => ({ ...r })), dirty: new Set(this.dirty) };
+  }
+
+  loadState(d: VisionSave): void {
+    this.ver = d.ver;
+    for (const [pid, g] of d.grids) {
+      const cur = this.grids.get(pid); // keep array identity (a renderer may hold the reference)
+      if (cur && cur.length === g.length) cur.set(g); else this.grids.set(pid, g);
+    }
+    this.revealed.clear(); for (const p of d.revealed) this.revealed.add(p);
+    this.reveals = d.reveals.map((r) => ({ ...r }));
+    this.dirty.clear(); for (const p of d.dirty) this.dirty.add(p);
   }
 
   // ───────────────────────── internals ─────────────────────────

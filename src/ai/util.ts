@@ -124,6 +124,19 @@ export function indexBehind(points: readonly Vec2[], i: number, distance: number
   return j;
 }
 
+/** [save] Copy the listed own fields of an object (plain data only — the save codec deep-copies). */
+export function pickFields<T extends object, K extends keyof T>(o: T, keys: readonly K[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of keys) out[k as string] = o[k];
+  return out;
+}
+/** [save] Restore fields written by pickFields (missing keys keep their current value). */
+export function assignFields<T extends object>(o: T, data: unknown, keys: readonly (keyof T)[]): void {
+  if (!data || typeof data !== 'object') return;
+  const d = data as Record<string, unknown>;
+  for (const k of keys) if ((k as string) in d) (o as Record<string, unknown>)[k as string] = d[k as string];
+}
+
 /** "m:ss" */
 export function fmtTime(sec: number): string {
   const s = Math.max(0, Math.round(sec));

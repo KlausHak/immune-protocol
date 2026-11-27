@@ -20,6 +20,7 @@ import type {
 } from './services';
 import { GridSpatialIndex } from './spatial';
 import { installStubs } from './stubs';
+import type { SaveParticipant, WorldCoreState } from './save/types';
 
 export interface PlayerInit {
   id: PlayerId;
@@ -79,6 +80,11 @@ export class World {
   private pendingRemoval: Entity[] = [];
   private startedOrders = new WeakSet<Order>();
   private lastAlert = new Map<number, number>();
+  /** [save] modules register how to save/restore their private state (see src/sim/save). */
+  private saveParticipants: SaveParticipant[] = [];
+  /** [save] true while a saved game is being restored: entitySpawned listeners should skip side effects
+   *  (their module's SaveParticipant.load restores the real state afterwards). */
+  restoring = false;
 
   constructor(opts: WorldOptions) {
     this.map = opts.map;
@@ -424,6 +430,51 @@ export class World {
       e.orders.shift();
       if (!e.alive) return;
     }
+  }
+
+  // ───────────────────────── save / load ─────────────────────────
+  /** Register (or replace, by key) a module's save hooks. Modules call this from their install*(). */
+  registerSaveParticipant(p: SaveParticipant): void {
+    this.saveParticipants = this.saveParticipants.filter((x) => x.key !== p.key);
+    this.saveParticipants.push(p);
+  }
+  getSaveParticipants(): readonly SaveParticipant[] { return this.saveParticipants; }
+
+  /** World-level scalar/private state for a save (entities, players and projectiles are captured separately). */
+  exportCore(): WorldCoreState {
+    return {
+      tick: this.tick, time: this.time, nextEntityId: this.nextEntityId, nextProjectileId: this.nextProjectileId,
+      rngState: this.rng.getState(), rules: { ...this.rules },
+      lastAlert: [...this.lastAlert.entries()],
+      pendingCommands: this.pendingCommands.map((c) => structuredClone(c)),
+      pendingRemovalIds: this.pendingRemoval.map((e) => e.id),
+    };
+  }
+  importCore(c: WorldCoreState): void {
+    this.tick = c.tick; this.time = c.time; this.nextEntityId = c.nextEntityId; this.nextProjectileId = c.nextProjectileId;
+    this.rng.setState(c.rngState); this.rules = { ...c.rules };
+    this.lastAlert = new Map(c.lastAlert);
+    this.pendingCommands = c.pendingCommands.map((x) => structuredClone(x));
+    this.pendingRemoval = c.pendingRemovalIds.map((id) => this.entities.get(id)).filter((e): e is Entity => !!e);
+  }
+
+  /** Recreate an entity from saved fields (def/tags are rebuilt from defId). Registers it, blocks its footprint
+   *  and emits entitySpawned (with world.restoring = true). Keeps the saved id. */
+  restoreEntity(fields: Record<string, unknown>): Entity {
+    const defId = fields.defId as string;
+    const def = getDef(defId);
+    const tags = new Set(def.kind === 'resource' ? [] : def.tags);
+    const e = { ...fields, def, tags } as unknown as Entity;
+    if (e.tile && e.def.kind !== 'unit' && e.alive) {
+      const fp = (e.def as BuildingDef).footprint;
+      this.movement.setFootprintBlocked(e.tile, fp.w, fp.h, true);
+    }
+    // orders in progress keep running without re-invoking start() (module state is restored by participants)
+    if (e.orders[0]) this.startedOrders.add(e.orders[0]);
+    this.entities.set(e.id, e);
+    this.list.push(e);
+    this.events.emit('entitySpawned', { entity: e });
+    return e;
   }
 
   // ───────────────────────── internals ─────────────────────────

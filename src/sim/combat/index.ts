@@ -23,7 +23,7 @@ import type { World } from '../World';
 import { AbilityServiceImpl } from './abilities';
 import { createIdleBehavior } from './idle';
 import { createOrderHandlers } from './orders';
-import { CombatRuntime } from './runtime';
+import { CombatRuntime, type CombatSave } from './runtime';
 import { splashDamage, type SplashSpec } from './service';
 import { createCombatSystem } from './system';
 
@@ -62,12 +62,17 @@ export function installCombat(world: World): void {
   world.orderHandlers.heal = h.heal;
   world.orderHandlers.ability = h.ability;
   world.addSystem(createCombatSystem(rt));
+  world.registerSaveParticipant({
+    key: 'combat',
+    save: () => rt.saveState(),
+    load: (_w, data) => rt.loadState(data as CombatSave),
+  });
 
   // on-death passives (viral_burst). Deaths caused while a burst resolves are queued, not recursed into.
   const pending: Entity[] = [];
   let draining = false;
   rt.unsubs.push(world.events.on('entityDied', ({ entity }) => {
-    if (!rt.active || entity.def.kind === 'resource' || entity.def.abilities.length === 0) return;
+    if (!rt.active || world.restoring || entity.def.kind === 'resource' || entity.def.abilities.length === 0) return;
     pending.push(entity);
     if (draining) return;
     draining = true;

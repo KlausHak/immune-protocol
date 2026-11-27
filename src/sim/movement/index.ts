@@ -16,11 +16,11 @@
  */
 import type { World } from '../World';
 import { followHandler, moveHandler } from './handlers';
-import { MovementController } from './movement';
+import { MovementController, type MovementSave } from './movement';
 import { FastSpatialIndex } from './spatialIndex';
-import { FogOfWar } from './vision';
+import { FogOfWar, type VisionSave } from './vision';
 
-export { MovementController, MoveExt, isGhosting } from './movement';
+export { MovementController, isGhosting, newMoveExt, type MoveExt } from './movement';
 export { FogOfWar } from './vision';
 export { FastSpatialIndex } from './spatialIndex';
 export { NavGrid, sizeClass, MAX_CLASS } from './navgrid';
@@ -55,5 +55,17 @@ export function installMovement(world: World): void {
   world.orderHandlers.follow = followHandler;
   world.addSystem({ name: 'movement', order: 30, update: (_w, dt) => movement.update(dt) });
   world.addSystem({ name: 'vision', order: 60, update: () => vision.update() });
+  // save/load: per-unit state lives in entity.ext.movement / ext.vision / ext.follow (plain data, saved by the
+  // core); module runtime goes through these participants. Seen-building memory is ext.vision.seen.
+  world.registerSaveParticipant({
+    key: 'movement',
+    save: () => movement.saveState(),
+    load: (_w, data) => movement.loadState(data as MovementSave),
+  });
+  world.registerSaveParticipant({
+    key: 'vision',
+    save: () => vision.saveState(),
+    load: (_w, data) => vision.loadState(data as VisionSave),
+  });
   internals.set(world, { movement, vision, spatial });
 }

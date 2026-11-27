@@ -58,6 +58,10 @@ export interface AiController {
   setAttackTarget(target: Vec2 | null): void;
   /** Debug/telemetry for HUD & tests */
   describe(): string;
+  /** [save] AI brain state as codec-safe data (see src/sim/save/types.ts). World state is saved separately. */
+  save?(): unknown;
+  /** [save] Restore brain state on a freshly created controller, after the world has been restored. */
+  load?(data: unknown): void;
 }
 
 export interface CreateAiOptions {
@@ -161,6 +165,37 @@ export class PathogenAi implements AiController {
     } catch (err) {
       b.fail('update', err);
     }
+  }
+
+  /** [save] Everything that steers future decisions, as codec-safe plain data (entity refs → ids). */
+  save(): unknown {
+    return {
+      v: 1, difficulty: this.diff, lastTick: this.lastTick,
+      brain: this.brain.saveState(), macro: this.macro.saveState(), workers: this.workers.saveState(),
+      army: this.army.saveState(), defense: this.defense.saveState(), scout: this.scout.saveState(),
+    };
+  }
+
+  /** [save] Restore onto a freshly created controller after the world has been restored. */
+  load(data: unknown): void {
+    try {
+      const d = (data ?? {}) as Record<string, unknown>;
+      const diff = d.difficulty as Difficulty | undefined;
+      if (diff && diff !== this.diff) {
+        this.diff = diff;
+        this.brain.setDifficulty(diff);
+        // think grid only: the player's gatherMul was restored with the world (missions may override it)
+        this.cadence = Math.max(1, Math.round(this.brain.prof.tacticSec / TICK_DT));
+        for (const s of this.slots) s.every = Math.max(1, Math.round(s.sec() / (this.cadence * TICK_DT)));
+      }
+      if (typeof d.lastTick === 'number') this.lastTick = d.lastTick;
+      this.brain.loadState(d.brain); // first: bases are needed by the defence state
+      this.macro.loadState(d.macro);
+      this.workers.loadState(d.workers);
+      this.army.loadState(d.army);
+      this.defense.loadState(d.defense);
+      this.scout.loadState(d.scout);
+    } catch (err) { this.brain.fail('load', err); }
   }
 
   setFlags(flags: Partial<AiFlags>): void {

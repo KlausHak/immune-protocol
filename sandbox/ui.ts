@@ -11,6 +11,8 @@ import type { CameraApi, EndScreenResult, GameUi, ObjectiveView, PortraitId } fr
 import { ABILITY_DEFS, BUILDING_DEFS, UNIT_DEFS, UPGRADE_DEFS } from '../src/data';
 import type { AppApi, CommandButton, ControlMode, GameContext, LaunchConfig, SelectionApi } from '../src/game/contracts';
 import { DEFAULT_SETTINGS, saveSettings, type CampaignProgress, type Settings } from '../src/game/settings';
+import { SaveStore } from '../src/game/saves';
+import type { SaveGame, SaveMeta } from '../src/sim/save';
 import type { Controls } from '../src/input/Controls';
 import { getMap } from '../src/map';
 import type { GameRenderer } from '../src/render/core/GameRenderer';
@@ -40,6 +42,8 @@ const app: AppApi = {
   restartGame: () => console.log('[sandbox] restartGame'),
   saveSettings: () => saveSettings(settings),
   markMissionComplete: (id: string) => { if (!progress.completed.includes(id)) progress.completed.push(id); },
+  saves: new SaveStore(),
+  loadGame: async (src: string | SaveGame) => { console.log('[sandbox] loadGame', typeof src === 'string' ? src : src.meta.slot); },
 };
 
 
@@ -184,6 +188,14 @@ class SandboxGame implements GameContext {
     this.controls = new FakeControls(this) as unknown as Controls;
   }
   issue(cmd: Command): void { this.world.issue(cmd); }
+  canSave(): boolean { return !this.world.rules.gameOver; }
+  /** Sandbox: stores a metadata-only fake save so the Save/Load panels have content. */
+  async saveGame(slot: string, name?: string): Promise<SaveMeta> {
+    const meta: SaveMeta = { slot, name: name || `Test Grounds · ${Math.floor(this.world.time / 60)}m`, savedAt: new Date().toISOString(), mode: 'skirmish', mapId: 'test', mapName: this.map.name, difficulty: 'normal', gameTime: this.world.time, version: 1 };
+    const save = { version: 1, meta, launch: { mode: 'skirmish', mapId: 'test', difficulty: 'normal', seed: 1 }, world: {}, modules: {}, ai: {}, mission: null } as SaveGame;
+    await app.saves.put(save);
+    return meta;
+  }
   pause(): void { this.paused = true; }
   resume(): void { this.paused = false; }
   setSpeed(s: number): void { this.speed = s; }
@@ -303,7 +315,10 @@ function startHudSandbox(): void {
   // loop: fixed-step sim + HUD + a cheap 2D stand-in for the 3D view
   const view = new FakeView(game);
   let last = performance.now(), acc = 0, timerAcc = 0;
+  // freeze=<ms>: stop the loop after a while (headless screenshots need the main thread to go idle)
+  const freezeAt = q.has('freeze') ? performance.now() + Number(q.get('freeze') || 2500) : Infinity;
   const frame = (now: number) => {
+    if (now > freezeAt) return;
     requestAnimationFrame(frame);
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;

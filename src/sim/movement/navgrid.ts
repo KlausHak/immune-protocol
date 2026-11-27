@@ -141,6 +141,13 @@ export class NavGrid {
     }
   }
 
+  /** Load: adopt the saved version counter (walkability itself is rebuilt from footprints) and drop label
+   *  caches computed while footprints were being re-stamped. */
+  restoreVersion(v: number): void {
+    this.version = v;
+    for (let c = 0; c < this.labelVersion.length; c++) this.labelVersion[c] = -1;
+  }
+
   /** Connected-component labels (4-connected admissible nodes) for a class; 0 = not admissible. */
   labelsFor(cls: number): Int32Array {
     if (this.labelVersion[cls] === this.version) return this.labels[cls]!;

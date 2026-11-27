@@ -11,6 +11,8 @@ import type { GameRenderer } from '../render/core/GameRenderer';
 import type { Controls } from '../input/Controls';
 import type { AudioEngine } from '../audio/AudioEngine';
 import type { CampaignProgress, Settings } from './settings';
+import type { SaveGame, SaveMeta } from '../sim/save';
+import type { SaveStore } from './saves';
 
 export interface LaunchConfig {
   mode: 'campaign' | 'skirmish';
@@ -18,6 +20,8 @@ export interface LaunchConfig {
   mapId?: string;               // skirmish (default 'meilahti')
   difficulty: Difficulty;
   seed?: number;
+  /** restore this saved match instead of starting fresh (mode/map/mission/difficulty/seed come from the save) */
+  load?: SaveGame;
   /** debug/testing */
   revealMap?: boolean;
   speed?: number;
@@ -28,7 +32,11 @@ export interface AppApi {
   readonly settings: Settings;
   readonly audio: AudioEngine;
   readonly progress: CampaignProgress;
+  /** save-game storage: list/get/put/delete slots, export/import files (src/game/saves.ts) */
+  readonly saves: SaveStore;
   startGame(cfg: LaunchConfig): void;
+  /** Load a saved match (slot id or SaveGame). Rejects with a readable Error if missing/incompatible. */
+  loadGame(source: string | SaveGame): Promise<void>;
   quitToMenu(): void;
   restartGame(): void;
   saveSettings(): void;
@@ -60,6 +68,10 @@ export interface GameContext {
   setSpeed(s: number): void;
   quitToMenu(): void;
   restart(): void;
+  /** false after the match has ended */
+  canSave(): boolean;
+  /** Save into a slot ('quick' | 'auto' | 'slot1'…'slot8'); name defaults to mission/map + game clock. */
+  saveGame(slot: string, name?: string): Promise<SaveMeta>;
 }
 
 /** One command-card button (3 rows × 5 cols, slot = row*5+col). Produced by Controls, rendered by the HUD. */

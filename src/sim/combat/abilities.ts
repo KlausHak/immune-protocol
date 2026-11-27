@@ -56,11 +56,7 @@ const IMPLS: Record<string, AbilityImpl> = {
   },
   emergency_supply: {
     cast(rt, caster, a) {
-      const owner = caster.owner, amount = a.amount ?? 100;
-      rt.schedule(EMERGENCY_SUPPLY_DELAY, () => {
-        if (!rt.active || !caster.alive || caster.owner !== owner) return; // HQ lost before the drop
-        rt.world.economy.addResources(owner, { matter: amount });
-      });
+      rt.schedule(EMERGENCY_SUPPLY_DELAY, { kind: 'supplyDrop', casterId: caster.id, owner: caster.owner, amount: a.amount ?? 100 });
     },
   },
   viral_burst: {

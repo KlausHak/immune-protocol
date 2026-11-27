@@ -11,7 +11,7 @@ import { angleOf, sub } from '../../core/math';
 import type { Entity, Vec2 } from '../../core/types';
 import type { MissionInfo } from '../index';
 import {
-  byDifficulty, line, mergeComposition, polar, scaleComposition, ScriptedMission, type Composition,
+  byDifficulty, line, mergeComposition, polar, refOf, scaleComposition, ScriptedMission, type Composition, type SavedRef,
 } from '../script';
 
 export const M3_INFO: MissionInfo = {
@@ -124,9 +124,8 @@ export class StrainOmega extends ScriptedMission {
   /** Strain Omega once it has emerged (tests / debugging). */
   get boss(): Entity | null { return this.omega; }
 
-  protected build(): void {
+  protected spawn(): void {
     const s = this.script, P = s.playerId, E = s.enemyId, d = s.difficulty, T = M3_TUNING;
-    s.setLighting('nordic_dusk');
     s.spawnMapResources();
     s.setResources(P, { matter: T.startSupplies, energy: T.startPower });
     s.setResources(E, { matter: 300, energy: 150 });
@@ -175,7 +174,12 @@ export class StrainOmega extends ScriptedMission {
     s.setAiAttackTarget(ch);
     const foe = s.world.players.get(E);
     if (foe) foe.gatherMul *= byDifficulty(d, T.aiGatherMul);
+  }
 
+  protected scriptMission(): void {
+    const s = this.script;
+    s.setLighting('nordic_dusk');
+    s.defineTarget('childrens', () => (this.childrens?.alive ? { ...this.childrens.pos } : s.playerBaseTarget(s.refs.point('omega_spawn'))));
     this.scriptObjectives();
     this.scriptWaves();
     this.scriptEndings();
@@ -192,7 +196,23 @@ export class StrainOmega extends ScriptedMission {
     s.after(Math.max(0.5, ends[0]! - 0.5), () => { s.reveal(spawn, 9, 8); s.panTo(spawn, 2.5); }, 'intro-omega');
     s.after(Math.max(1, ends[1]! - 0.5), () => s.panTo(ch, 2.5), 'intro-children');
     s.after(Math.max(1.5, ends[3]! - 0.5), () => s.panTo(home, 3), 'intro-home');
-    s.after(ends[3]! + 1, () => s.hint(M3_HINTS.turrets, { id: 'turrets' }), 'hint-turrets');
+    s.hintLater(ends[3]! + 1, M3_HINTS.turrets, 'turrets');
+  }
+
+  protected saveState(): Record<string, unknown> {
+    return {
+      hq: refOf(this.hq), childrens: refOf(this.childrens), core: refOf(this.core), omega: refOf(this.omega),
+      omegaSpawned: this.omegaSpawned, doorLine: this.doorLine,
+    };
+  }
+
+  protected loadState(d: Record<string, unknown>): void {
+    this.hq = this.deref(d.hq as SavedRef);
+    this.childrens = this.deref(d.childrens as SavedRef);
+    this.core = this.deref(d.core as SavedRef);
+    this.omega = this.deref(d.omega as SavedRef);
+    this.omegaSpawned = d.omegaSpawned as boolean;
+    this.doorLine = d.doorLine as number;
   }
 
   // ───────────────────────── setup helpers ─────────────────────────
@@ -244,6 +264,11 @@ export class StrainOmega extends ScriptedMission {
       s.onHpBelow(ch, 0.25, () => s.bark(M3_LINES.quarter, 15), 'children-quarter');
     }
     if (this.core) s.onDeath(this.core, () => this.coreDown(), { name: 'core-down' });
+    // Strain Omega watchers are registered up-front (stable trigger ids for save/load); they wait for it.
+    const omegaBelow = (f: number) => (): boolean => !!this.omega?.alive && this.omega.hp <= this.omega.stats.maxHp * f;
+    s.when(omegaBelow(0.66), () => s.bark(M3_LINES.omega66, 15), { interval: 0.25, name: 'omega-66' });
+    s.when(omegaBelow(0.33), () => s.say(M3_LINES.omega33, { expires: 15 }), { interval: 0.25, name: 'omega-33' });
+    s.onDeath({ tag: 'boss' }, () => this.omegaDown(), { name: 'omega-down' });
     s.at(200, () => s.hint(M3_HINTS.depot, { id: 'depot' }), 'hint-depot');
   }
 
@@ -251,7 +276,7 @@ export class StrainOmega extends ScriptedMission {
 
   private scriptWaves(): void {
     const s = this.script, T = M3_TUNING;
-    const target = (): Vec2 | null => (this.childrens?.alive ? { ...this.childrens.pos } : s.playerBaseTarget());
+    const target = { named: 'childrens' };
     T.waves.forEach((w, i) => s.at(w.at, () => {
       if (s.finished) return;
       s.sendWave(w.comp, w.gate, { name: `m3-w${i + 1}`, target, tags: ['pre_omega'] });
@@ -275,18 +300,19 @@ export class StrainOmega extends ScriptedMission {
     this.omegaSpawned = true;
     s.stopTimer();
     const at = s.walkableNear(s.refs.point('omega_spawn'), 14);
-    const target = (): Vec2 | null => (this.childrens?.alive ? { ...this.childrens.pos } : s.playerBaseTarget(at));
+    const target = { named: 'childrens' };
+    const targetPos = s.targetResolver(target, at);
     const omega = s.spawnUnits('path_strain_omega', 1, E, at, { tags: ['boss', 'omega', 'scripted'] })[0] ?? null;
     this.omega = omega;
     if (omega) omega.hp = Math.max(1, Math.round(omega.stats.maxHp * byDifficulty(d, T.omegaHpFrac)));
     const escortComp = scaleComposition(mergeComposition(T.omegaEscort, d === 'hard' || d === 'brutal' ? T.omegaEscortHard : null), d);
-    const toTarget = angleOf(sub(target() ?? at, at));
+    const toTarget = angleOf(sub(targetPos() ?? at, at));
     const escorts: Entity[] = [];
     for (const [id, n] of Object.entries(escortComp)) escorts.push(...s.spawnUnits(id, n, E, polar(at, toTarget + Math.PI, 4), { tags: ['omega_escort', 'scripted'] }));
     if (omega) s.march([omega], target, { name: 'omega', assertive: true });
     s.march(escorts, target, { name: 'omega-escort' });
 
-    if (byDifficulty(d, T.aiAttacksAfterOmega)) { s.setAiFlags({ attack: true }); s.setAiAttackTarget(target()); }
+    if (byDifficulty(d, T.aiAttacksAfterOmega)) { s.setAiFlags({ attack: true }); s.setAiAttackTarget(targetPos()); }
     s.revealObjective('omega');
     s.reveal(at, 14, 20);
     s.ping(at, 0xd64bff);
@@ -294,12 +320,7 @@ export class StrainOmega extends ScriptedMission {
     s.shake(0.8, 1.8);
     s.notify('STRAIN OMEGA HAS EMERGED', 'alert');
     s.say(early ? M3_LINES.emergeEarly : M3_LINES.emerge, { urgent: true });
-    s.after(12, () => s.hint(M3_HINTS.omega, { id: 'omega' }), 'hint-omega');
-    if (omega) {
-      s.onHpBelow(omega, 0.66, () => s.bark(M3_LINES.omega66, 15), 'omega-66');
-      s.onHpBelow(omega, 0.33, () => s.say(M3_LINES.omega33, { expires: 15 }), 'omega-33');
-      s.onDeath(omega, () => this.omegaDown(), { name: 'omega-down' });
-    }
+    s.hintLater(12, M3_HINTS.omega, 'omega');
   }
 
   private omegaDown(): void {

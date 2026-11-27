@@ -172,6 +172,7 @@ export class GameRenderer {
       scene: this.scene, camera: this.camera, world: this.world, localPlayerId: this.local, quality,
       getEntityModel: (id) => this.views.get(id)?.model,
       heightAt: (x, y) => sampleHeight(this.world.map, x, y),
+      onShake: (intensity, seconds) => this.cameraCtl.shake(intensity, seconds),
     });
 
     this.decals = new GroundDecals(this.world.map);
@@ -335,7 +336,7 @@ export class GameRenderer {
     this.cameraCtl.onResize();
   };
 
-  /** Switch render tier at runtime (pixel ratio, shadows, post chain). Environment/VFX keep their build-time tier. */
+  /** Switch render tier at runtime (pixel ratio, shadows, post chain, VFX tier; environment if it supports setQuality). */
   setQuality(q: Quality): void {
     const profile = qualityProfile(q);
     this.profile = profile;
@@ -351,6 +352,8 @@ export class GameRenderer {
     }
     this.views.setMinCasterRadius(profile.minCasterRadius);
     this.three.shadowMap.needsUpdate = true;
+    try { (this.vfx as { setQuality?: (q: Quality) => void }).setQuality?.(profile.quality); } catch (err) { warnOnce('vfx-q', 'vfx.setQuality threw', err); }
+    try { (this.environment as unknown as { setQuality?: (q: Quality) => void }).setQuality?.(profile.quality); } catch (err) { warnOnce('env-q', 'environment.setQuality threw', err); }
     this.pixelRatio = pixelRatioFor(profile);
     this.resize();
     this.post.configure(profile, this.width, this.height, this.pixelRatio);

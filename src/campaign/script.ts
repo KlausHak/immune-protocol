@@ -256,6 +256,10 @@ interface EventSpec { kind: 'event'; repeat: boolean; off: () => void }
 class TriggerImpl implements Trigger {
   status: 'armed' | 'consumed' | 'cancelled' = 'armed';
   fired = 0;
+  /** codec-safe per-trigger state kept across save/load (e.g. throttle timestamps, "seen" flags) */
+  memo: Record<string, number | boolean> = {};
+  /** event triggers: the deferred callback */
+  onPayload: ((p: unknown) => void) | null = null;
   constructor(readonly id: number, readonly name: string, readonly spec: TimeSpec | WhenSpec | EventSpec, readonly fn: () => void) {}
   get active(): boolean { return this.status === 'armed'; }
   cancel(): void {
@@ -263,6 +267,12 @@ class TriggerImpl implements Trigger {
     this.status = 'cancelled';
     if (this.spec.kind === 'event') this.spec.off();
   }
+}
+
+export interface SavedTriggers {
+  nextId: number;
+  list: Array<{ id: number; name: string; status: 'armed' | 'consumed' | 'cancelled'; fired: number; memo: Record<string, number | boolean>; next: number; remaining: number }>;
+  deferred: Array<{ id: number; payload: unknown }>;
 }
 
 export interface WhenOptions {
@@ -273,6 +283,8 @@ export interface WhenOptions {
   /** minimum seconds between two firings of a repeating trigger */
   cooldown?: number;
   name?: string;
+  /** state object shared with the predicate/callback closures that survives save/load */
+  memo?: Record<string, number | boolean>;
 }
 
 /** Time-, predicate- and event-driven triggers. Driven by MissionScript.update() with mission time. */
@@ -281,7 +293,7 @@ export class TriggerEngine {
   time = 0;
   errors = 0;
   private list: TriggerImpl[] = [];
-  private deferred: Array<{ trig: TriggerImpl; run: () => void }> = [];
+  private deferred: Array<{ trig: TriggerImpl; payload: unknown }> = [];
   private nextId = 1;
   private pruneCounter = 0;
 
@@ -302,10 +314,14 @@ export class TriggerEngine {
   }
   /** Fires when `pred()` becomes true (polled). */
   when(pred: () => boolean, fn: () => void, opts: WhenOptions = {}): Trigger {
-    return this.add(opts.name ?? 'when', {
+    const t = this.add(opts.name ?? 'when', {
       kind: 'when', pred, interval: Math.max(0, opts.interval ?? 0), next: this.time, repeat: !!opts.repeat, cooldown: Math.max(0, opts.cooldown ?? 0),
-    }, fn);
+    }, fn) as TriggerImpl;
+    if (opts.memo) t.memo = opts.memo;
+    return t;
   }
+  /** Attach a memo object to an existing trigger (shared with the trigger's closures). */
+  setMemo(t: Trigger, memo: Record<string, number | boolean>): void { (t as TriggerImpl).memo = memo; }
   /** Fires on a world event whose payload passes `filter` (callback deferred to the next mission update). */
   onEvent<K extends GameEventType>(
     type: K, filter: ((p: GameEvents[K]) => boolean) | null, fn: (p: GameEvents[K]) => void,
@@ -321,11 +337,11 @@ export class TriggerEngine {
       }
       if (!ok) return;
       if (!repeat) { trig.status = 'consumed'; spec.off(); }
-      const t = trig;
-      this.deferred.push({ trig: t, run: () => fn(p) });
+      this.deferred.push({ trig, payload: p });
     };
     const spec: EventSpec = { kind: 'event', repeat, off: () => {} };
     trig = this.add(opts.name ?? `on:${String(type)}`, spec, () => {}) as TriggerImpl;
+    trig.onPayload = fn as (p: unknown) => void;
     spec.off = this.world.events.on(type, handler);
     return trig;
   }
@@ -336,10 +352,11 @@ export class TriggerEngine {
     if (this.deferred.length) {
       const q = this.deferred;
       this.deferred = [];
-      for (const { trig, run } of q) {
-        if (trig.status === 'cancelled') continue;
+      for (const { trig, payload } of q) {
+        if (trig.status === 'cancelled' || !trig.onPayload) continue;
         trig.fired++;
-        this.safe(trig.name, run);
+        const cb = trig.onPayload;
+        this.safe(trig.name, () => cb(payload));
       }
     }
     // 2) polled triggers in creation order (triggers added during this pass start next update)
@@ -368,6 +385,46 @@ export class TriggerEngine {
       }
     }
     if (++this.pruneCounter >= 100) { this.pruneCounter = 0; this.list = this.list.filter((t) => t.status === 'armed'); }
+  }
+
+  /** Codec-safe snapshot: per-trigger status/timing/memo by stable id + pending deferred events. */
+  saveState(encodePayload: (p: unknown) => unknown): SavedTriggers {
+    return {
+      nextId: this.nextId,
+      list: this.list.map((t) => ({
+        id: t.id, name: t.name, status: t.status, fired: t.fired, memo: { ...t.memo },
+        next: t.spec.kind === 'event' ? 0 : t.spec.next,
+        remaining: t.spec.kind === 'time' ? t.spec.remaining : 0,
+      })),
+      deferred: this.deferred.map((d) => ({ id: d.trig.id, payload: encodePayload(d.payload) })),
+    };
+  }
+  /** Patch triggers re-created (in the same order) by the mission script. Unknown ids are ignored. */
+  restoreState(data: SavedTriggers, decodePayload: (p: unknown) => unknown): void {
+    const byId = new Map(this.list.map((t) => [t.id, t]));
+    const savedIds = new Set<number>();
+    for (const st of data.list) {
+      savedIds.add(st.id);
+      const t = byId.get(st.id);
+      if (!t) continue;
+      if (t.name !== st.name) console.warn(`[campaign] restore: trigger #${st.id} is "${t.name}", save had "${st.name}"`);
+      t.fired = st.fired;
+      Object.assign(t.memo, st.memo);
+      if (t.spec.kind === 'time') { t.spec.next = st.next; t.spec.remaining = st.remaining; }
+      else if (t.spec.kind === 'when') t.spec.next = st.next;
+      if (st.status !== 'armed') {
+        t.status = st.status;
+        if (t.spec.kind === 'event') t.spec.off();
+      }
+    }
+    // triggers pruned from the saved list were finished: finish their re-created counterparts too
+    for (const t of this.list) if (t.id < data.nextId && !savedIds.has(t.id) && t.status === 'armed') {
+      t.status = 'consumed';
+      if (t.spec.kind === 'event') t.spec.off();
+    }
+    this.deferred = [];
+    for (const d of data.deferred) { const t = byId.get(d.id); if (t) this.deferred.push({ trig: t, payload: decodePayload(d.payload) }); }
+    this.nextId = Math.max(this.nextId, data.nextId);
   }
 
   /** Cancel everything (unsubscribes event listeners). */
@@ -480,6 +537,10 @@ export class ObjectiveManager {
     return prim.length > 0 && prim.every((o) => o.status === 'done');
   }
   activePrimaries(): Objective[] { return this.list.filter((o) => o.primary && o.status === 'active'); }
+  /** Plain copy for saves. */
+  saveState(): { version: number; list: Objective[] } { return { version: this.version, list: this.list.map((o) => ({ ...o })) }; }
+  /** Replace all objectives (no change notifications). */
+  loadState(d: { version: number; list: Objective[] }): void { this.list = d.list.map((o) => ({ ...o })); this.version = d.version; }
   onChange(fn: (o: Objective, change: ObjectiveChange) => void): () => void {
     this.listeners.push(fn);
     return () => { this.listeners = this.listeners.filter((l) => l !== fn); };
@@ -504,6 +565,12 @@ export interface SayOptions {
   then?: () => void;
 }
 interface QueuedLine { line: DialogueLine; duration: number; queuedAt: number; expiresAt: number; then?: () => void }
+export interface SavedDialogue {
+  current: Omit<QueuedLine, 'then'> | null;
+  freeAt: number;
+  queue: Array<Omit<QueuedLine, 'then'>>;
+  history: Array<{ time: number; line: DialogueLine }>;
+}
 
 /**
  * Paced dialogue queue. Lines are handed to ui.showDialogue one at a time with an explicit duration,
@@ -567,6 +634,20 @@ export class DialogueQueue {
 
   /** True while a line is on screen or waiting. */
   get busy(): boolean { return !!this.current || this.queue.length > 0; }
+
+  /** Queue position for saves (`then` continuations are not saved; missions don't rely on them). */
+  saveState(): SavedDialogue {
+    const strip = (q: QueuedLine) => ({ line: { ...q.line }, duration: q.duration, queuedAt: q.queuedAt, expiresAt: q.expiresAt });
+    return { current: this.current ? strip(this.current) : null, freeAt: this.freeAt, queue: this.queue.filter((q) => q.expiresAt >= 0).map(strip), history: this.history.map((h) => ({ time: h.time, line: { ...h.line } })) };
+  }
+  /** Restore the queue; the line that was on screen is NOT shown again. */
+  loadState(d: SavedDialogue): void {
+    this.current = d.current ? { ...d.current } : null;
+    this.freeAt = d.freeAt;
+    this.queue = d.queue.map((q) => ({ ...q }));
+    this.history.length = 0;
+    this.history.push(...d.history);
+  }
   /** Drop everything queued (the line on screen finishes normally). */
   clear(): void { this.queue = []; }
 
@@ -578,6 +659,8 @@ export class DialogueQueue {
 // ═════════════════════════════════════════ mission timer ═════════════════════════════════════════
 
 /** Countdown shown via ui.setMissionTimer. Cues fire when `remaining` drops to their `at` (seconds left). */
+export interface SavedTimer { label: string; total: number; remaining: number; expired: boolean; cuesDone: boolean[] }
+
 export class MissionTimer {
   remaining: number;
   expired = false;
@@ -590,6 +673,13 @@ export class MissionTimer {
   setRemaining(seconds: number): void {
     this.remaining = Math.max(0, seconds);
     for (const c of this.cues) if (c.at > this.remaining + 1e-9) c.done = true;
+  }
+  saveState(): SavedTimer { return { label: this.label, total: this.total, remaining: this.remaining, expired: this.expired, cuesDone: this.cues.map((c) => c.done) }; }
+  /** Patch counters from a save (callbacks stay those of this instance). */
+  patch(d: SavedTimer): void {
+    this.remaining = d.remaining;
+    this.expired = d.expired;
+    d.cuesDone.forEach((done, i) => { const c = this.cues[i]; if (c) c.done = done; });
   }
   /** Advance by dt; runs cues/expiry through `safe`. */
   tick(dt: number, safe: (name: string, fn: () => void) => void): void {
@@ -607,7 +697,15 @@ export class MissionTimer {
 
 // ═════════════════════════════════════════ waves & guards ═════════════════════════════════════════
 
-export type TargetSpec = Vec2 | string | Entity | (() => Vec2 | null);
+/**
+ * Where a wave marches: a position, a point name, an entity, a target registered with defineTarget()
+ * ({ named }) or an ad-hoc resolver function (ad-hoc functions can't be saved: prefer { named }).
+ */
+export type TargetSpec = Vec2 | string | Entity | { named: string } | (() => Vec2 | null);
+/** Codec-safe form of a TargetSpec (saved with each wave). */
+export type SavedTarget =
+  | { kind: 'base' } | { kind: 'pos'; x: number; y: number } | { kind: 'point'; name: string }
+  | { kind: 'entity'; id: number } | { kind: 'named'; name: string };
 
 export interface WaveOptions {
   /** wave name → tags 'wave' + 'wave:<name>' (default 'wave<N>') */
@@ -633,6 +731,8 @@ export interface WaveRecord {
   from: Vec2;
   ids: EntityId[];
   target: () => Vec2 | null;
+  /** codec-safe description of `target` */
+  spec: SavedTarget;
   shepherd: boolean;
   assertive: boolean;
 }
@@ -691,6 +791,44 @@ function formation(n: number, spacing: number): Vec2[] {
   return out.slice(0, n);
 }
 
+// ═════════════════════════════════════════ save data ═════════════════════════════════════════
+
+export interface SavedScript {
+  t0: number; state: MissionState; endReason: string | null; ending: { at: number } | null;
+  victoryWhenPrimariesDone: boolean; nextShepherd: number; waveCounter: number;
+  triggers: SavedTriggers;
+  objectives: { version: number; list: Objective[] };
+  dialogue: SavedDialogue;
+  timer: SavedTimer | null;
+  waves: Array<Omit<WaveRecord, 'target'>>;
+  guards: GuardRecord[];
+  hintShownAt: Map<string, number>;
+  hintLog: Array<{ time: number; text: string; kind: NotifyKind }>;
+  aiFlags: Partial<AiFlags>;
+  lastReissue: Map<EntityId, { x: number; y: number; t: number }>;
+  scheduled: Array<{ id: number; at: number; action: string; args: unknown }>;
+  nextScheduleId: number;
+}
+
+/** Saved reference to an entity a mission holds on to. */
+export interface GhostInfo { id: number; defId: string; owner: PlayerId; kind: string; x: number; y: number; tags: string[] }
+export type SavedRef = GhostInfo | null;
+
+function isEntityLike(v: unknown): v is Entity {
+  return !!v && typeof v === 'object' && 'scriptTags' in v && 'defId' in v && 'pos' in v && 'id' in v;
+}
+/** Stand-in for an entity that no longer exists after a load: dead, with its last position and tags. */
+function makeGhost(g: GhostInfo): Entity {
+  return {
+    id: g.id, defId: g.defId, owner: g.owner, kind: g.kind, alive: false, hp: 0, pos: { x: g.x, y: g.y }, prevPos: { x: g.x, y: g.y },
+    radius: 1, facing: 0, prevFacing: 0, stats: { maxHp: 1 }, tags: new Set(), orders: [], cooldowns: {}, scriptTags: new Set(g.tags), ext: {},
+    lastDamagedAt: -999, lastAttackerId: null, bornAt: 0, activity: 'idle', invulnerable: false,
+  } as unknown as Entity;
+}
+export function refOf(e: Entity | null | undefined): SavedRef {
+  return e ? { id: e.id, defId: e.defId, owner: e.owner, kind: e.kind, x: e.pos.x, y: e.pos.y, tags: [...e.scriptTags] } : null;
+}
+
 // ═════════════════════════════════════════ MissionScript ═════════════════════════════════════════
 
 /** The toolkit a mission script works with. One instance per mission run. */
@@ -731,6 +869,10 @@ export class MissionScript {
   private nextShepherd = 0;
   private waveCounter = 0;
   private lastReissue = new Map<EntityId, { x: number; y: number; t: number }>();
+  private namedTargets = new Map<string, () => Vec2 | null>();
+  private actions = new Map<string, (args: unknown) => void>();
+  private scheduled: Array<{ id: number; at: number; action: string; args: unknown }> = [];
+  private nextScheduleId = 1;
   /** seconds before a stuck (idle, unmoved) wave/guard unit is re-commanded again */
   static REISSUE_BACKOFF = 10;
 
@@ -784,6 +926,7 @@ export class MissionScript {
     const t = this.time;
     if (this.state === 'running') {
       this.triggers.update(t);
+      if (this.scheduled.length && this.state === 'running') this.runScheduled(t);
       if (this.timer && this.state === 'running') {
         this.timer.tick(dt, (name, fn) => this.safe(name, fn));
       }
@@ -825,31 +968,132 @@ export class MissionScript {
 
   /** Fires once every entity carrying `tag` is gone — only after at least one has existed. Polled 4×/s. */
   onAllDead(tag: string, fn: () => void, opts: { name?: string } = {}): Trigger {
-    let seen = false;
+    const memo = { seen: false };
     return this.when(() => {
       const n = this.countTagged(tag);
-      if (n > 0) seen = true;
-      return seen && n === 0;
-    }, fn, { interval: 0.25, name: opts.name ?? `allDead:${tag}` });
+      if (n > 0) memo.seen = true;
+      return memo.seen && n === 0;
+    }, fn, { interval: 0.25, name: opts.name ?? `allDead:${tag}`, memo });
   }
 
   /** Damage to an entity / tag, throttled per trigger. */
   onDamaged(target: Entity | EntityId | { tag: string }, fn: (p: GameEvents['entityDamaged']) => void, opts: { cooldown?: number; byOwner?: PlayerId; name?: string } = {}): Trigger {
     const match = this.matcher(target);
     const cd = opts.cooldown ?? 20;
-    let last = -Infinity;
-    return this.onEvent('entityDamaged', (p) => {
+    const memo = { last: -1e9 };
+    const t = this.onEvent('entityDamaged', (p) => {
       if (!match(p.entity) || p.amount <= 0) return false;
       if (opts.byOwner != null && p.source?.owner !== opts.byOwner) return false;
-      if (this.world.time - last < cd) return false;
-      last = this.world.time;
+      if (this.world.time - memo.last < cd) return false;
+      memo.last = this.world.time;
       return true;
     }, fn, { repeat: true, name: opts.name ?? 'damaged' });
+    this.triggers.setMemo(t, memo);
+    return t;
   }
 
   /** One-shot when an alive entity's hp drops to ≤ fraction × maxHp. */
   onHpBelow(e: Entity, fraction: number, fn: () => void, name = 'hpBelow'): Trigger {
     return this.when(() => e.alive && e.hp <= e.stats.maxHp * fraction, fn, { interval: 0.25, name });
+  }
+
+  // ───────────────────────── scheduled actions (save-safe delayed work) ─────────────────────────
+
+  /**
+   * Register a named action. Delayed work scheduled with schedule(sec, name, args) survives save/load
+   * (unlike after(fn) closures created at runtime). Register actions in the mission's scriptMission().
+   */
+  defineAction(name: string, fn: (args: unknown) => void): void { this.actions.set(name, fn); }
+  /** Run a registered action `seconds` from now with codec-safe `args`. */
+  schedule(seconds: number, action: string, args: unknown = null): void {
+    if (!this.actions.has(action) && action !== 'hint') this.reportError('schedule', new Error(`unknown action "${action}"`));
+    this.scheduled.push({ id: this.nextScheduleId++, at: this.time + Math.max(0, seconds), action, args });
+  }
+  /** Save-safe delayed hint. */
+  hintLater(seconds: number, text: string, id?: string): void { this.schedule(seconds, 'hint', { text, id: id ?? text }); }
+
+  private runScheduled(t: number): void {
+    const due = this.scheduled.filter((x) => t + 1e-9 >= x.at).sort((a, b) => a.at - b.at || a.id - b.id);
+    if (!due.length) return;
+    const ids = new Set(due.map((x) => x.id));
+    this.scheduled = this.scheduled.filter((x) => !ids.has(x.id));
+    for (const x of due) {
+      if (x.action === 'hint') { const a = x.args as { text: string; id: string }; this.hint(a.text, { id: a.id }); continue; }
+      const fn = this.actions.get(x.action);
+      if (fn) this.safe(`action:${x.action}`, () => fn(x.args));
+    }
+  }
+
+  // ───────────────────────── save / load ─────────────────────────
+
+  /** Codec-safe snapshot of the whole script state. */
+  saveState(): SavedScript {
+    return {
+      t0: this.t0, state: this.state, endReason: this.endReason, ending: this.ending ? { ...this.ending } : null,
+      victoryWhenPrimariesDone: this.victoryWhenPrimariesDone, nextShepherd: this.nextShepherd, waveCounter: this.waveCounter,
+      triggers: this.triggers.saveState((p) => this.encodePayload(p)),
+      objectives: this.objectives.saveState(),
+      dialogue: this.dialogue.saveState(),
+      timer: this.timer ? this.timer.saveState() : null,
+      waves: this.waves.map((w) => ({ name: w.name, spawnedAt: w.spawnedAt, from: { ...w.from }, ids: [...w.ids], spec: { ...w.spec }, shepherd: w.shepherd, assertive: w.assertive })),
+      guards: this.guards.map((g) => ({ ids: [...g.ids], post: { ...g.post }, leash: g.leash })),
+      hintShownAt: new Map(this.hintShownAt), hintLog: this.hintLog.map((h) => ({ ...h })), aiFlags: { ...this.aiFlags },
+      lastReissue: new Map([...this.lastReissue].map(([k, v]) => [k, { ...v }])),
+      scheduled: this.scheduled.map((x) => ({ ...x })), nextScheduleId: this.nextScheduleId,
+    };
+  }
+
+  /** Apply a snapshot AFTER the mission has re-registered its triggers/actions/targets (same order as setup). */
+  restoreState(d: SavedScript): void {
+    this.started = true;
+    this.t0 = d.t0;
+    this.state = d.state;
+    this.endReason = d.endReason;
+    this.ending = d.ending ? { ...d.ending } : null;
+    this.victoryWhenPrimariesDone = d.victoryWhenPrimariesDone;
+    this.nextShepherd = d.nextShepherd;
+    this.waveCounter = d.waveCounter;
+    this.triggers.time = this.time;
+    this.triggers.restoreState(d.triggers, (p) => this.decodePayload(p));
+    this.objectives.loadState(d.objectives);
+    this.dialogue.loadState(d.dialogue);
+    if (!d.timer) this.timer = null;
+    else {
+      if (!this.timer || this.timer.label !== d.timer.label || this.timer.total !== d.timer.total) this.timer = new MissionTimer(d.timer.label, d.timer.total, null);
+      this.timer.patch(d.timer);
+    }
+    this.waves.length = 0;
+    for (const w of d.waves) this.waves.push({ ...w, ids: [...w.ids], target: this.resolverFor(w.spec, w.from) });
+    this.guards = d.guards.map((g) => ({ ids: [...g.ids], post: { ...g.post }, leash: g.leash }));
+    this.hintShownAt = new Map(d.hintShownAt);
+    this.hintLog.length = 0;
+    this.hintLog.push(...d.hintLog);
+    for (const k of Object.keys(this.aiFlags)) delete (this.aiFlags as Record<string, unknown>)[k];
+    Object.assign(this.aiFlags, d.aiFlags);
+    this.lastReissue = new Map(d.lastReissue);
+    this.scheduled = d.scheduled.map((x) => ({ ...x }));
+    this.nextScheduleId = d.nextScheduleId;
+  }
+
+  /** Event payloads may hold entities: store a small descriptor instead. */
+  private encodePayload(p: unknown): unknown {
+    if (!p || typeof p !== 'object') return p;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(p as Record<string, unknown>)) {
+      if (isEntityLike(v)) out[k] = { __ent: { id: v.id, defId: v.defId, owner: v.owner, kind: v.kind, x: v.pos.x, y: v.pos.y, tags: [...v.scriptTags] } };
+      else if (v && typeof v === 'object' && !Array.isArray(v)) out[k] = JSON.parse(JSON.stringify(v));
+      else out[k] = v;
+    }
+    return out;
+  }
+  private decodePayload(p: unknown): unknown {
+    if (!p || typeof p !== 'object') return p;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(p as Record<string, unknown>)) {
+      const ent = v && typeof v === 'object' ? (v as { __ent?: GhostInfo }).__ent : undefined;
+      out[k] = ent ? this.world.get(ent.id) ?? makeGhost(ent) : v;
+    }
+    return out;
   }
 
   // ───────────────────────── objectives ─────────────────────────
@@ -1112,15 +1356,33 @@ export class MissionScript {
 
   /** Resolve a TargetSpec into a position resolver. Default: the player's HQ, else their nearest structure. */
   targetResolver(spec: TargetSpec | undefined, from?: Vec2): () => Vec2 | null {
-    if (spec == null) return () => this.playerBaseTarget(from);
     if (typeof spec === 'function') return spec;
-    if (typeof spec === 'string') { const p = this.refs.point(spec); return () => p; }
-    if ('kind' in spec) {
-      const ent = spec;
-      return () => (ent.alive ? { x: ent.pos.x, y: ent.pos.y } : this.playerBaseTarget(from));
+    return this.resolverFor(this.toSavedTarget(spec), from);
+  }
+
+  /** Register a named target resolver (usable as `{ named }` in waves/marches and restorable from saves). */
+  defineTarget(name: string, fn: () => Vec2 | null): void { this.namedTargets.set(name, fn); }
+
+  private toSavedTarget(spec: TargetSpec | undefined): SavedTarget {
+    if (spec == null) return { kind: 'base' };
+    if (typeof spec === 'function') {
+      warnOnce(`fn-target`, '[campaign] wave target given as an ad-hoc function cannot be saved; use defineTarget() + { named }');
+      return { kind: 'base' };
     }
-    const p = { x: spec.x, y: spec.y };
-    return () => p;
+    if (typeof spec === 'string') return { kind: 'point', name: spec };
+    if ('named' in spec) return { kind: 'named', name: spec.named };
+    if ('kind' in spec) return { kind: 'entity', id: spec.id };
+    return { kind: 'pos', x: spec.x, y: spec.y };
+  }
+
+  private resolverFor(t: SavedTarget, from?: Vec2): () => Vec2 | null {
+    switch (t.kind) {
+      case 'pos': { const p = { x: t.x, y: t.y }; return () => p; }
+      case 'point': { const p = this.refs.point(t.name); return () => p; }
+      case 'entity': return () => { const e = this.world.getAlive(t.id); return e ? { x: e.pos.x, y: e.pos.y } : this.playerBaseTarget(from); };
+      case 'named': return () => { const fn = this.namedTargets.get(t.name); return fn ? fn() : this.playerBaseTarget(from); };
+      default: return () => this.playerBaseTarget(from);
+    }
   }
 
   /** The player's Central Hospital, else the player's structure nearest `from`, else their start. */
@@ -1145,7 +1407,8 @@ export class MissionScript {
     const name = opts.name ?? `wave${++this.waveCounter}`;
     const spawnAt = this.walkableNear(this.resolvePoint(from));
     const c = opts.scale === false ? { ...comp } : scaleComposition(comp, this.difficulty);
-    const target = this.targetResolver(opts.target, spawnAt);
+    const spec = typeof opts.target === 'function' ? null : this.toSavedTarget(opts.target);
+    const target = spec ? this.resolverFor(spec, spawnAt) : this.targetResolver(opts.target, spawnAt);
     const tp = target() ?? this.refs.point('player_start');
     let ids: EntityId[] = [];
     if (this.ai && opts.viaAi !== false) {
@@ -1157,7 +1420,7 @@ export class MissionScript {
       if (units.length) this.world.issue({ type: 'attackMove', playerId: this.enemyId, unitIds: units.map((u) => u.id), target: tp });
     }
     this.tag(units, 'wave', `wave:${name}`, ...(opts.tags ?? []));
-    this.waves.push({ name, spawnedAt: this.time, from: spawnAt, ids: units.map((u) => u.id), target, shepherd: opts.shepherd !== false, assertive: !!opts.assertive });
+    this.waves.push({ name, spawnedAt: this.time, from: spawnAt, ids: units.map((u) => u.id), target, spec: spec ?? this.toSavedTarget(opts.target), shepherd: opts.shepherd !== false, assertive: !!opts.assertive });
     if (opts.ping !== false) this.ping(spawnAt);
     return units;
   }
@@ -1167,10 +1430,11 @@ export class MissionScript {
     const alive = units.filter((u) => u.alive);
     if (!alive.length) return;
     const owner = alive[0]!.owner;
-    const resolver = this.targetResolver(target, alive[0]!.pos);
+    const spec = typeof target === 'function' ? null : this.toSavedTarget(target);
+    const resolver = spec ? this.resolverFor(spec, alive[0]!.pos) : this.targetResolver(target, alive[0]!.pos);
     const tp = resolver();
     if (tp) this.world.issue({ type: 'attackMove', playerId: owner, unitIds: alive.map((u) => u.id), target: tp });
-    this.waves.push({ name: opts.name ?? `march${++this.waveCounter}`, spawnedAt: this.time, from: { ...alive[0]!.pos }, ids: alive.map((u) => u.id), target: resolver, shepherd: true, assertive: !!opts.assertive });
+    this.waves.push({ name: opts.name ?? `march${++this.waveCounter}`, spawnedAt: this.time, from: { ...alive[0]!.pos }, ids: alive.map((u) => u.id), target: resolver, spec: spec ?? this.toSavedTarget(target), shepherd: true, assertive: !!opts.assertive });
   }
 
   /** Keep units near a post: idle ones that wandered beyond `leash` attack-move back. */
@@ -1354,13 +1618,32 @@ export abstract class ScriptedMission implements MissionRunner {
     if (this.didSetup) return;
     this.didSetup = true;
     this.script.begin();
-    try { this.build(); } catch (err) { this.script.reportError(`${this.info.id}.build`, err); }
+    try { this.spawn(); } catch (err) { this.script.reportError(`${this.info.id}.spawn`, err); }
+    try { this.scriptMission(); } catch (err) { this.script.reportError(`${this.info.id}.scriptMission`, err); }
   }
 
-  attach(ui: GameUi | null, camera: CameraApi | null): void {
+  /** [save] Script + mission state as codec-safe data. */
+  save(): SavedMission {
+    return { id: this.info.id, script: this.script.saveState(), mission: this.saveState() };
+  }
+
+  /** [save] Replaces setup() on load: re-registers the mission's triggers (no spawning) and patches their state. */
+  restore(data: unknown): void {
+    this.didSetup = true;
+    this.didAttach = true; // never replay the intro
+    this.script.begin();
+    const d = data as SavedMission | null;
+    try {
+      if (d) this.loadState(d.mission);
+      this.scriptMission();
+      if (d) this.script.restoreState(d.script);
+    } catch (err) { this.script.reportError(`${this.info.id}.restore`, err); }
+  }
+
+  attach(ui: GameUi | null, camera: CameraApi | null, opts: { restored?: boolean } = {}): void {
     if (!this.didSetup) this.setup();
-    this.script.attach(ui, camera);
-    if (this.didAttach) return;
+    this.script.attach(ui, camera); // (re)shows objectives + timer
+    if (this.didAttach || opts.restored) { this.didAttach = true; return; }
     this.didAttach = true;
     try { this.intro(); } catch (err) { this.script.reportError(`${this.info.id}.intro`, err); }
   }
@@ -1373,6 +1656,24 @@ export abstract class ScriptedMission implements MissionRunner {
 
   objectives(): ObjectiveView[] { return this.script.objectives.views(); }
 
-  protected abstract build(): void;
+  /** Resolve a saved entity reference (a dead stand-in if the entity no longer exists). */
+  protected deref(r: SavedRef | undefined): Entity | null {
+    if (!r) return null;
+    return this.script.world.get(r.id) ?? makeGhost(r);
+  }
+
+  /** setup() only: entities, starting resources, AI flags, guards. */
+  protected abstract spawn(): void;
+  /**
+   * setup() AND restore(): objectives, triggers, timers, named actions/targets, lighting. Must not touch
+   * the world otherwise, and must register triggers in a deterministic order (ids are matched on load).
+   */
+  protected abstract scriptMission(): void;
+  /** attach() on a fresh start only: opening dialogue and camera work. */
   protected abstract intro(): void;
+  /** Mission fields (entity refs as SavedRef, counters, phase flags). */
+  protected abstract saveState(): Record<string, unknown>;
+  protected abstract loadState(d: Record<string, unknown>): void;
 }
+
+export interface SavedMission { id: string; script: SavedScript; mission: Record<string, unknown> }

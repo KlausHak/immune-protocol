@@ -19,7 +19,7 @@ import { EnemyMemory } from './memory';
 import { HIVE, PERSONALITY_DEFS, pickPersonality, type Personality, type PersonalityDef } from './personality';
 import { profileFor, type DifficultyProfile } from './profile';
 import type { Difficulty } from '../core/types';
-import { centroid, densify, hasWeapons, indexAhead, isWorkerUnit, pathLength } from './util';
+import { assignFields, centroid, densify, hasWeapons, indexAhead, isWorkerUnit, pathLength, pickFields } from './util';
 
 /** What a unit is currently doing for the AI. Units without a role are "home" (army) or free (workers). */
 export type Role = 'builder' | 'scout' | 'explorer' | 'militia' | 'squad' | 'defender' | 'regen';
@@ -81,7 +81,7 @@ export interface BrainOptions { difficulty: Difficulty; personality?: Personalit
 export class Brain {
   readonly flags: AiFlags = { economy: true, build: true, army: true, attack: true, expand: true, defend: true };
   prof: DifficultyProfile;
-  readonly pers: PersonalityDef;
+  pers: PersonalityDef;
   readonly rng: Rng;
   readonly memory: EnemyMemory;
   readonly player: PlayerState;
@@ -147,6 +147,48 @@ export class Brain {
         if (p) { p.buildingId = building.id; p.cost = {}; }
       }),
     );
+  }
+
+  // ───────────────────────── save / load ─────────────────────────
+
+  private static readonly SAVED = [
+    'flags', 'controlled', 'waveUnits', 'roles', 'pending', 'staging', 'enemyStarts', 'attackOverride', 'initialized', 'errors',
+    'attacks', 'income', 'statSamples', 'actions', 'sitesAt', 'basesTick', 'stagingAt', 'stagingFrom', 'distCache', 'badTiles', 'basesKey',
+  ] as const;
+
+  /** [save] All decision-relevant state as plain data (entity references become ids). */
+  saveState(): Record<string, unknown> {
+    return {
+      fields: pickFields(this as unknown as Record<string, unknown>, Brain.SAVED as unknown as string[]),
+      personality: this.pers.id,
+      rng: this.rng.getState(),
+      bases: this.bases.map((b) => ({ hive: b.hive.id, pos: b.pos, complete: b.complete, caches: b.caches.map((c) => c.id), mineral: b.mineral, remaining: b.remaining })),
+      sites: this.sites.map((s) => ({ key: s.key, center: s.center, nodes: s.nodes.map((n) => n.id), amount: s.amount })),
+      memory: this.memory.saveState(),
+    };
+  }
+
+  loadState(data: unknown): void {
+    const d = (data ?? {}) as Record<string, unknown>;
+    assignFields(this as unknown as Record<string, unknown>, d.fields, Brain.SAVED as unknown as string[]);
+    const pers = PERSONALITY_DEFS[d.personality as Personality];
+    if (pers) this.pers = pers;
+    if (typeof d.rng === 'number') this.rng.setState(d.rng);
+    let complete = true;
+    const w = this.world;
+    this.bases = [];
+    for (const b of (d.bases ?? []) as Array<{ hive: EntityId; pos: Vec2; complete: boolean; caches: EntityId[]; mineral: Vec2 | null; remaining: number }>) {
+      const hive = w.get(b.hive);
+      const caches = b.caches.map((id) => w.get(id)).filter((e): e is Entity => !!e);
+      if (!hive || caches.length !== b.caches.length) complete = false;
+      if (hive) this.bases.push({ hive, pos: b.pos, complete: b.complete, caches, mineral: b.mineral, remaining: b.remaining });
+    }
+    if (!complete) this.basesKey = ''; // a referenced entity is gone: the original would recompute on next use too
+    this.sites = ((d.sites ?? []) as Array<{ key: number; center: Vec2; nodes: EntityId[]; amount: number }>).map((s) => ({
+      key: s.key, center: s.center, amount: s.amount, nodes: s.nodes.map((id) => w.get(id)).filter((e): e is Entity => !!e),
+    }));
+    this.memory.loadState(d.memory);
+    this.snapCache = null; this.loadCache = null; this.visCache = null;
   }
 
   dispose(): void { for (const u of this.unsub) u(); this.unsub = []; }
