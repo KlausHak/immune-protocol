@@ -1,4 +1,4 @@
-import { STARTING_RESOURCES, STARTING_WORKERS, PLAYER_COLORS } from '../config';
+import { STARTING_RESOURCES, STARTING_WORKERS } from '../config';
 import type { Difficulty, Entity, FactionId, MapData, PlayerId } from '../core/types';
 import { FACTIONS, getBuildingDef } from '../data';
 import { installSimModules } from './install';
@@ -8,11 +8,20 @@ export interface MatchPlayer { id: PlayerId; faction: FactionId; team: number; c
 
 /** Create a world for a map + players with all real sim modules installed. Does not spawn anything. */
 export function createWorld(map: MapData, players: MatchPlayer[], seed = 1): World {
+  // Team colour follows the FACTION (pathogens are always magenta-ish, the hospital teal); in a mirror match the
+  // second player of a faction gets that faction's alternate colour. Colours are cosmetic (not part of the sim).
+  const ALT: Record<string, number> = { hospital: 0x4b8bff, pathogen: 0xffb23b, neutral: 0xc8c8c8 };
+  const seenFaction = new Set<string>();
+  const colorFor = (faction: FactionId): number => {
+    const c = seenFaction.has(faction) ? ALT[faction]! : FACTIONS[faction].color;
+    seenFaction.add(faction);
+    return c;
+  };
   const inits: PlayerInit[] = players.map((p) => {
     const slot = map.slots.find((s) => s.id === p.id);
     return {
       id: p.id, name: p.name ?? FACTIONS[p.faction].name, faction: p.faction, team: p.team,
-      color: PLAYER_COLORS[p.id] ?? FACTIONS[p.faction].color, controller: p.controller,
+      color: colorFor(p.faction), controller: p.controller,
       startPos: slot?.start, resources: { ...STARTING_RESOURCES },
     };
   });

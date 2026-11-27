@@ -1,22 +1,24 @@
 /**
- * [input] The drag box-select rectangle: a DOM overlay in #ui-root (pointer-events: none) styled as teal
- * glass. Coordinates are canvas-relative CSS pixels (the same space as GameRenderer picking).
+ * [input] The drag box-select rectangle: a DOM overlay in #ui-root (pointer-events: none) styled as glass in
+ * the LOCAL faction's accent (teal for the hospital, violet for the pathogens). Coordinates are canvas-relative CSS pixels (the same space as GameRenderer picking).
  */
 export class SelectionBox {
   private readonly el: HTMLDivElement;
   private readonly root: HTMLElement;
   private visible = false;
 
-  constructor(private readonly canvas: HTMLCanvasElement) {
+  constructor(private readonly canvas: HTMLCanvasElement, faction: string = 'hospital') {
+    // [r,g,b] of the rim / fill / highlight
+    const [rim, fill, hi] = faction === 'pathogen' ? ['226,160,255', '211,107,255', '241,203,255'] : ['118,255,236', '47,214,198', '160,255,245'];
     this.root = document.getElementById('ui-root') ?? canvas.parentElement ?? document.body;
     this.el = document.createElement('div');
     this.el.className = 'ip-selection-box';
     this.el.setAttribute('aria-hidden', 'true');
     this.el.style.cssText = [
       'position:absolute', 'left:0', 'top:0', 'width:0', 'height:0', 'display:none', 'pointer-events:none', 'z-index:4',
-      'box-sizing:border-box', 'border:1px solid rgba(118,255,236,0.95)', 'border-radius:3px',
-      'background:linear-gradient(135deg, rgba(47,214,198,0.22), rgba(47,214,198,0.07) 60%, rgba(160,255,245,0.12))',
-      'box-shadow:0 0 0 1px rgba(0,30,34,0.45), 0 0 12px rgba(47,214,198,0.45), inset 0 0 16px rgba(47,214,198,0.22)',
+      'box-sizing:border-box', `border:1px solid rgba(${rim},0.95)`, 'border-radius:3px',
+      `background:linear-gradient(135deg, rgba(${fill},0.22), rgba(${fill},0.07) 60%, rgba(${hi},0.12))`,
+      `box-shadow:0 0 0 1px rgba(0,30,34,0.45), 0 0 12px rgba(${fill},0.45), inset 0 0 16px rgba(${fill},0.22)`,
       'backdrop-filter:brightness(1.12) saturate(1.2)', '-webkit-backdrop-filter:brightness(1.12) saturate(1.2)',
     ].join(';');
     this.root.appendChild(this.el);

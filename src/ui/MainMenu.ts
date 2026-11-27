@@ -19,8 +19,10 @@ import { createSettingsPanel, type SettingsPanel } from './settingsPanel';
 import { ensureUiStyles } from './styles';
 import { createLoadPanel, errText, saveSummary, UI_TOAST_EVENT, type Panel } from './saveLoad';
 import type { NotifyKind } from '../core/ui';
+import { MultiplayerPage } from './mp/MultiplayerPage';
+import { currentSession, sessionAlive, takeMenuReturn } from './mp/state';
 
-type Screen = 'home' | 'campaign' | 'skirmish' | 'load' | 'settings' | 'howto' | 'credits';
+type Screen = 'home' | 'campaign' | 'skirmish' | 'multiplayer' | 'load' | 'settings' | 'howto' | 'credits';
 
 const PREF_KEY = 'immune-protocol.menu.v1';
 const DIFFS: Array<[Difficulty, string, string]> = [
@@ -92,6 +94,7 @@ export class MainMenu {
   private prefs: Prefs = loadPrefs();
   private settings: SettingsPanel | null = null;
   private loadPanel: Panel | null = null;
+  private mpPage: MultiplayerPage | null = null;
   private continueBtn!: HTMLButtonElement;
   private toastBox!: HTMLDivElement;
   private lastHover: Element | null = null;
@@ -125,6 +128,7 @@ export class MainMenu {
     this.continueBtn.addEventListener('click', () => { void this.continueLatest(); });
     item('campaign', 'ui.flag', 'Campaign', `${CAMPAIGN_NAME} · ${CAMPAIGN.length} mission${CAMPAIGN.length === 1 ? '' : 's'}`);
     item('skirmish', 'ui.swords', 'Skirmish', 'Free battle against The Contagion AI');
+    item('multiplayer', 'ui.people', 'Multiplayer (LAN)', '1v1 with a friend on your network — either faction');
     item('load', 'ui.restart', 'Load Game', 'Saved matches, quicksave & autosave, import');
     item('settings', 'ui.sliders', 'Settings', 'Audio, controls and display');
     item('howto', 'ui.book', 'How to Play', 'Controls cheat sheet & field manual');
@@ -149,7 +153,11 @@ export class MainMenu {
     window.addEventListener(UI_TOAST_EVENT, this.onToastEvent);
     this.bg.start();
     void this.refreshContinue();
-    this.screen = this.screen === 'campaign' || this.screen === 'skirmish' ? this.screen : 'home';
+    // after a LAN match: back to the lobby while the relay session lives (else the title screen)
+    const ret = takeMenuReturn();
+    if (ret === 'lobby' && sessionAlive(currentSession())) this.screen = 'multiplayer';
+    else if (ret === 'home') this.screen = 'home';
+    else this.screen = this.screen === 'campaign' || this.screen === 'skirmish' || (this.screen === 'multiplayer' && sessionAlive(currentSession())) ? this.screen : 'home';
     this.renderRight();
     this.focusFirst();
   }
@@ -159,6 +167,8 @@ export class MainMenu {
     window.removeEventListener(UI_TOAST_EVENT, this.onToastEvent);
     this.loadPanel?.dispose();
     this.loadPanel = null;
+    this.mpPage?.dispose();
+    this.mpPage = null;
     this.bg.stop();
     this.settings?.dispose();
     this.settings = null;
@@ -171,7 +181,7 @@ export class MainMenu {
 
   /** Open a page directly ('campaign' | 'skirmish' | 'settings' | 'howto' | 'credits' | 'home'). */
   openScreen(screen: string): void {
-    const ok: Screen[] = ['home', 'campaign', 'skirmish', 'load', 'settings', 'howto', 'credits'];
+    const ok: Screen[] = ['home', 'campaign', 'skirmish', 'multiplayer', 'load', 'settings', 'howto', 'credits'];
     if ((ok as string[]).includes(screen)) this.open(screen as Screen);
   }
 
@@ -231,6 +241,7 @@ export class MainMenu {
 
   private onKey = (e: KeyboardEvent): void => {
     if (e.key === 'Escape') {
+      if (this.screen === 'multiplayer' && this.mpPage?.handleEscape()) { e.preventDefault(); return; }
       if (this.screen !== 'home') { e.preventDefault(); this.sound('close'); this.open('home'); }
       return;
     }
@@ -253,6 +264,7 @@ export class MainMenu {
 
   private open(s: Screen): void {
     if (s !== this.screen) this.sound(s === 'home' ? 'close' : 'open');
+    if (s !== this.screen && this.screen === 'multiplayer') this.mpPage?.leaveRoomOnExit();
     this.screen = s;
     this.renderRight();
     this.focusFirst();
@@ -280,6 +292,8 @@ export class MainMenu {
     this.settings = null;
     this.loadPanel?.dispose();
     this.loadPanel = null;
+    this.mpPage?.dispose();
+    this.mpPage = null;
     for (const [s, b] of this.navBtns) b.classList.toggle('is-current', s === this.screen);
     this.right.textContent = '';
     if (this.screen === 'home') { this.right.appendChild(this.ticker); return; }
@@ -288,6 +302,7 @@ export class MainMenu {
     const titles: Record<Exclude<Screen, 'home'>, [string, string]> = {
       campaign: ['Campaign', CAMPAIGN_NAME],
       skirmish: ['Skirmish', 'Choose your battleground'],
+      multiplayer: ['LAN 1v1', 'Multiplayer'],
       load: ['Saved games', 'Load Game'],
       settings: ['Options', 'Settings'],
       howto: ['Field manual', 'How to Play'],
@@ -305,6 +320,10 @@ export class MainMenu {
     switch (this.screen) {
       case 'campaign': this.renderCampaign(body); break;
       case 'skirmish': this.renderSkirmish(body); break;
+      case 'multiplayer':
+        this.mpPage = new MultiplayerPage({ app: this.app, sound: (k) => this.sound(k), toast: (t, k) => this.toast(t, k) });
+        body.appendChild(this.mpPage.el);
+        break;
       case 'load':
         this.loadPanel = createLoadPanel({ app: this.app, game: null, toast: (t, k) => this.toast(t, k), sound: (k) => this.sound(k) });
         body.appendChild(this.loadPanel.el);

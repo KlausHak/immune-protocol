@@ -90,7 +90,7 @@ export class Controls {
     const local = game.localPlayerId;
     this.selection = new Selection(game.world, local, { setSelection: (ids) => this.game.renderer.setSelection(ids) });
     this.groups = new ControlGroups(game.world, local);
-    this.box = new SelectionBox(this.canvas);
+    this.box = new SelectionBox(this.canvas, game.world.players.get(local)?.faction);
     this.hooks = {
       issue: (cmd) => this.issue(cmd, true),
       beginTargeting: (req) => this.beginTargeting(req),

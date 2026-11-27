@@ -24,6 +24,8 @@ import { iconHtml, iconKeys } from '../src/ui/icons';
 import { renderTerrain } from '../src/ui/mapRender';
 import { portraitSvg } from '../src/ui/portraits';
 import { ensureUiStyles } from '../src/ui/styles';
+import type { ChatMessage, LobbyState, LockstepDriver, MatchStart, NetEvents, NetMatch, NetSession, NetStatus, RoomSummary } from '../src/net/types';
+import { setMpFactories } from '../src/ui/mp/state';
 
 const q = new URLSearchParams(location.search);
 const flag = (k: string) => q.has(k) && q.get(k) !== '0';
@@ -154,9 +156,9 @@ class FakeControls {
 }
 
 class SandboxGame implements GameContext {
-  readonly net = null; // [architect] multiplayer field (single-player sandbox)
+  net: NetMatch | null = null; // set by ?mp=hud (fake LAN match)
   readonly app = app;
-  readonly config: LaunchConfig = { mode: 'skirmish', mapId: 'test', difficulty: 'normal' as Difficulty };
+  config: LaunchConfig = { mode: 'skirmish', mapId: 'test', difficulty: 'normal' as Difficulty };
   readonly world: World;
   readonly map: MapData;
   readonly localPlayerId = 1;
@@ -241,6 +243,28 @@ function startHudSandbox(): void {
   for (const k of workers.slice(0, 2)) { w.setOrders(k, []); w.movement.stop(k); k.activity = 'idle'; }
   w.step();
   for (let i = 0; i < 40; i++) w.step();
+
+  const mpMode = q.get('mp');
+  if (mpMode === 'hud') {
+    const session = new FakeSession({ name: 'Joonas' });
+    session.fakeConnect();
+    const start: MatchStart = { seed: 1, mapId: 'test', localPlayerId: 1, turnTicks: 2, inputDelayTurns: 2, startTick: 0,
+      players: [{ id: 1, faction: 'hospital', name: 'Joonas', team: 1 }, { id: 2, faction: 'pathogen', name: 'Aino', team: 2 }] };
+    const lock = new FakeLockstep();
+    game.net = { start, session, lockstep: lock };
+    game.config = { mode: 'multiplayer', difficulty: 'normal', net: game.net };
+    w.player(2).name = 'Aino';
+    w.player(1).name = 'Joonas';
+    (window as unknown as { __net: { session: FakeSession; lock: FakeLockstep } }).__net = { session, lock };
+    window.setTimeout(() => {
+      session.emit('chat', { from: 'Aino', slot: 2, text: 'glhf! my spores are coming for your pharmacy', at: Date.now() });
+      session.emit('chat', { from: 'Joonas', slot: 1, text: 'gl — the UV turrets are already warm', at: Date.now() });
+      if (flag('wait')) lock.waitingReason = 'Waiting for Aino…';
+      if (flag('desync')) session.emit('desync', { tick: 1234, localHash: 'a', remoteHash: 'b', resyncing: true });
+      if (flag('left')) { lock.opponentGone = { name: 'Aino', reason: 'disconnected', forfeitAt: performance.now() + 47_000 }; lock.waitingReason = 'Aino disconnected — waiting…'; session.emit('opponentLeft', { name: 'Aino', reason: 'disconnected' }); }
+      if (flag('typing')) { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); const i = document.querySelector<HTMLInputElement>('[data-testid="mp-chat-input"]'); if (i) i.value = 'push mid at 6:00'; }
+    }, 300);
+  }
 
   const hud = new Hud(uiRoot, game);
   game.ui = hud;
@@ -377,6 +401,118 @@ class FakeView {
   }
 }
 
+// ───────────────────────── fake LAN relay (?mp=…) ─────────────────────────
+type Listeners = Partial<Record<keyof NetEvents, Set<(e: never) => void>>>;
+
+/** In-memory stand-in for the relay session: scripted rooms, an opponent who joins and readies up, echoing chat. */
+class FakeSession implements NetSession {
+  status: NetStatus = 'connecting';
+  role: 'host' | 'guest' | null = null;
+  lobby: LobbyState | null = null;
+  pingMs = 38;
+  readonly name: string;
+  private ls: Listeners = {};
+  rooms: RoomSummary[] = [
+    { roomId: 'r1', hostName: 'Aino', mapId: 'meilahti', players: 1, inGame: false, createdAt: Date.now() - 60_000 },
+    { roomId: 'r2', hostName: 'Leena', mapId: 'test', players: 2, inGame: true, createdAt: Date.now() - 300_000 },
+    { roomId: 'r3', hostName: 'SISU-bot', mapId: 'meilahti', players: 2, inGame: false, createdAt: Date.now() - 20_000 },
+  ];
+  constructor(opts: { url?: string; name: string }, private fail = false) { this.name = opts.name; }
+  on<K extends keyof NetEvents>(type: K, fn: (e: NetEvents[K]) => void): () => void {
+    const set = (this.ls[type] ??= new Set()) as unknown as Set<(e: NetEvents[K]) => void>;
+    set.add(fn);
+    return () => { set.delete(fn); };
+  }
+  emit<K extends keyof NetEvents>(type: K, e: NetEvents[K]): void { for (const f of [...((this.ls[type] as unknown as Set<(e: NetEvents[K]) => void> | undefined) ?? [])]) f(e); }
+  private later(fn: () => void, ms = 120): void { window.setTimeout(fn, ms); }
+  private setStatus(s: NetStatus): void { this.status = s; this.emit('status', s); }
+  fakeConnect(): void { this.status = 'in-game'; }
+  boot(): void { this.later(() => { if (this.fail) { this.emit('error', { message: 'WebSocket connection failed (unreachable)' }); this.setStatus('disconnected'); } else this.setStatus('connected'); }, 250); }
+  listRooms(): void { this.later(() => this.emit('rooms', this.rooms.map((r) => ({ ...r })))); }
+  createRoom(o: { mapId: string; hostFaction: 'hospital' | 'pathogen' | 'neutral'; guestFaction: 'hospital' | 'pathogen' | 'neutral' }): void {
+    this.role = 'host';
+    this.lobby = { roomId: 'mine', mapId: o.mapId, state: 'waiting', players: [{ slot: 1, name: this.name, faction: o.hostFaction, ready: false, connected: true }] };
+    this.later(() => { this.setStatus('lobby'); this.emit('lobby', this.copy()); });
+    if (q.get('mp') === 'host') return; // host = alone in the room; lobby/countdown = an opponent joins
+    this.later(() => {
+      this.lobby!.players.push({ slot: 2, name: 'Aino', faction: o.guestFaction, ready: false, connected: true });
+      this.emit('chat', { from: '', slot: 0, text: 'Aino joined the room.', at: Date.now() });
+      this.emit('lobby', this.copy());
+      this.later(() => { this.lobby!.players[1]!.ready = true; this.emit('lobby', this.copy()); this.emit('chat', { from: 'Aino', slot: 2, text: 'ready when you are', at: Date.now() }); }, 900);
+    }, 1200);
+  }
+  joinRoom(id: string): void {
+    const r = this.rooms.find((x) => x.roomId === id);
+    if (!r || r.players >= 2) { this.later(() => this.emit('error', { message: 'room full' })); return; }
+    this.role = 'guest';
+    this.lobby = { roomId: id, mapId: r.mapId, state: 'waiting', players: [
+      { slot: 1, name: r.hostName, faction: 'pathogen', ready: true, connected: true },
+      { slot: 2, name: this.name, faction: 'pathogen', ready: false, connected: true }] };
+    this.later(() => { this.setStatus('lobby'); this.emit('lobby', this.copy()); });
+  }
+  updateRoom(o: { mapId?: string; hostFaction?: 'hospital' | 'pathogen' | 'neutral'; guestFaction?: 'hospital' | 'pathogen' | 'neutral' }): void {
+    const l = this.lobby; if (!l) return;
+    if (o.mapId) l.mapId = o.mapId;
+    if (o.hostFaction && l.players[0]) l.players[0].faction = o.hostFaction;
+    if (o.guestFaction && l.players[1]) l.players[1].faction = o.guestFaction;
+    for (const p of l.players) p.ready = false;
+    this.later(() => this.emit('lobby', this.copy()));
+  }
+  setReady(r: boolean): void {
+    const me = this.lobby?.players.find((p) => p.slot === (this.role === 'guest' ? 2 : 1));
+    if (!me) return;
+    me.ready = r;
+    this.later(() => this.emit('lobby', this.copy()));
+  }
+  startMatch(): void {
+    const l = this.lobby; if (!l) return;
+    l.state = 'starting';
+    this.emit('lobby', this.copy());
+    const local = this.role === 'guest' ? 2 : 1;
+    this.later(() => this.emit('start', { seed: 7, mapId: l.mapId, localPlayerId: local, turnTicks: 2, inputDelayTurns: 2, startTick: 0,
+      players: l.players.map((p) => ({ id: p.slot, faction: p.faction, name: p.name, team: p.slot })) }));
+  }
+  sendChat(text: string): void { const slot = this.role === 'guest' ? 2 : 1; this.later(() => this.emit('chat', { from: this.name, slot, text, at: Date.now() } as ChatMessage), 60); }
+  leave(): void { this.lobby = null; this.role = null; this.later(() => this.setStatus('connected')); }
+  private copy(): LobbyState { return JSON.parse(JSON.stringify(this.lobby)) as LobbyState; }
+}
+
+class FakeLockstep implements LockstepDriver {
+  waitingReason: string | null = null;
+  opponentGone: { name: string; reason: string; forfeitAt: number } | null = null;
+  pingMs = 42;
+  ticksReady(): number { return 0; }
+  beforeTick(): void {}
+  afterTick(): void {}
+  submit(cmd: Command): void { console.log('[sandbox] lockstep.submit', JSON.stringify(cmd)); }
+  dispose(): void {}
+}
+
+function startMpMenu(mode: string): void {
+  setMpFactories({
+    createSession: (opts) => { const s = new FakeSession(opts, mode === 'offline'); s.boot(); return s; },
+    createMatch: (session, start) => ({ session, start, lockstep: new FakeLockstep() }),
+  });
+  const menu = new MainMenu(uiRoot, app);
+  menu.show();
+  menu.openScreen('multiplayer');
+  (window as unknown as { __menu: MainMenu }).__menu = menu;
+  // condition-driven script (headless rendering is slow: never rely on fixed delays)
+  const steps: Array<[() => boolean, string]> = [];
+  const $ = (sel: string) => document.querySelector<HTMLButtonElement>(sel);
+  if (mode === 'host' || mode === 'lobby' || mode === 'countdown') steps.push([() => !!$('[data-testid="mp-host-btn"]') && !$('[data-testid="mp-host-btn"]')!.disabled, '[data-testid="mp-host-btn"]']);
+  if (mode === 'lobby' || mode === 'countdown') steps.push([() => !!document.querySelector('.ip-mp-slot[data-slot="2"] .ip-mp-ready.is-on'), '[data-testid="mp-ready"]']);
+  if (mode === 'countdown') steps.push([() => !!$('[data-testid="mp-start"]') && !$('[data-testid="mp-start"]')!.disabled, '[data-testid="mp-start"]']);
+  if (mode === 'join') steps.push([() => !!$('.ip-mp-room[data-room="r1"]'), '.ip-mp-room[data-room="r1"]']);
+  const run = () => {
+    const st = steps[0];
+    if (!st) return;
+    if (st[0]()) { steps.shift(); $(st[1])?.click(); }
+    window.setTimeout(run, 150);
+  };
+  run();
+}
+
 // ───────────────────────── icon gallery ─────────────────────────
 function showGallery(): void {
   ensureUiStyles();
@@ -394,7 +530,10 @@ function showGallery(): void {
 }
 
 // ───────────────────────── entry (after all declarations: classes are not hoisted) ─────────────────────────
-if (flag('menu')) {
+const mpQ = q.get('mp');
+if (mpQ && mpQ !== 'hud') {
+  startMpMenu(mpQ);
+} else if (flag('menu')) {
   const menu = new MainMenu(uiRoot, app);
   menu.show();
   const page = q.get('page');

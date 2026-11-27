@@ -1,6 +1,8 @@
 import { defineConfig } from 'vitest/config';
+import { lanRelayPlugin } from './server/vitePlugin.js'; // [net] LAN relay on <base>/lan (dev + preview)
 
 export default defineConfig({
+  plugins: [lanRelayPlugin()], // [net]
   // three is pure ESM; excluding it from pre-bundling avoids optimizer re-runs (and full reloads)
   // when new three/examples/jsm/* addons are imported while 15 developers share one dev server.
   optimizeDeps: { exclude: ['three'] },

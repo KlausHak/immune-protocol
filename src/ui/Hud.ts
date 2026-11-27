@@ -33,6 +33,7 @@ import { ObjectivesPanel } from './hud/objectives';
 import { EndScreen, PauseMenu } from './hud/overlays';
 import { SelectionPanel } from './hud/selectionPanel';
 import { FpsMeter, MissionTimer, TopBar } from './hud/topBar';
+import { MultiplayerHud } from './hud/multiplayer';
 
 
 /** Units worth a "ready" toast when they roll out. */
@@ -68,6 +69,8 @@ export class Hud implements GameUi {
   private savingEl: HTMLDivElement;
   private quickBusy = false;
   private confirmOpen = false;
+  /** LAN multiplayer layer (null in single-player) */
+  readonly mp: MultiplayerHud | null = null;
 
   constructor(private root: HTMLElement, private game: GameContext) {
     ensureUiStyles();
@@ -111,6 +114,10 @@ export class Hud implements GameUi {
     this.savingEl.dataset.testid = 'saving';
     this.savingEl.style.display = 'none';
     this.end = new EndScreen(this.el, game, (k) => this.sound(k));
+    if (game.net) {
+      this.mp = new MultiplayerHud(this.el, this.top.el, game, (k) => this.sound(k), (t, k) => this.notes.toast(t, k));
+      this.pause.onLeaveMatch = () => this.mp?.leaveMatch(true);
+    }
 
     window.addEventListener('keydown', this.onKeyCapture, true);
     this.subscribe();
@@ -143,7 +150,7 @@ export class Hud implements GameUi {
 
   /** Most recent located alert (for "jump to last alert"). */
   get lastAlertPos(): Vec2 | null { return this.notes.lastAlertPos; }
-  get isModalOpen(): boolean { return this.pause.isOpen || this.end.isOpen || this.confirmOpen; }
+  get isModalOpen(): boolean { return this.pause.isOpen || this.end.isOpen || this.confirmOpen || !!this.mp?.isDialogOpen; }
 
   update(dtReal: number): void {
     if (this.disposed) return;
@@ -156,6 +163,7 @@ export class Hud implements GameUi {
     this.safe('notes', () => this.notes.update(dtReal));
     this.safe('dialogue', () => this.dialogue.update(dtReal, g.paused));
     this.safe('idle', () => this.updateIdle(dtReal));
+    if (this.mp) this.safe('mp', () => this.mp!.update(dtReal));
     setClass(this.el, 'ip-paused', g.paused);
     // saving indicator (manual saves, quicksaves and the Game's silent autosave all set game.saving)
     const saving = !!(g as unknown as { saving?: boolean }).saving || this.quickBusy;
@@ -169,6 +177,7 @@ export class Hud implements GameUi {
     window.removeEventListener('keydown', this.onKeyCapture, true);
     for (const u of this.unsub) { try { u(); } catch { /* ignore */ } }
     this.unsub = [];
+    this.mp?.dispose();
     this.pause.dispose();
     this.end.dispose();
     this.card.dispose();
@@ -196,6 +205,7 @@ export class Hud implements GameUi {
       const t = e.target as HTMLElement | null;
       if (e.repeat || (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable))) return;
       e.stopPropagation();
+      if (this.game.net) { if (!this.pause.isOpen && !this.end.isOpen) this.notes.toast('Saving and loading are disabled in multiplayer', 'warning'); return; }
       if (e.key === 'F5') void this.quickSave(); else void this.quickLoad();
       return;
     }
@@ -211,6 +221,7 @@ export class Hud implements GameUi {
       e.stopPropagation();
       return;
     }
+    if (this.mp?.isDialogOpen) { e.stopPropagation(); return; } // opponent-left dialog owns the keyboard
     if (e.key === 'F10') { e.preventDefault(); this.openPauseMenu(); }
   };
 

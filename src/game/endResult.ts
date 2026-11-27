@@ -9,8 +9,9 @@ export function buildEndResult(game: GameContext, winnerTeam: number | null, rea
   const idx = mission ? CAMPAIGN.findIndex((m) => m.id === mission.id) : -1;
   return {
     victory,
-    title: victory ? 'OUTBREAK CONTAINED' : 'CAMPUS LOST',
-    subtitle: mission ? `${mission.subtitle}: ${mission.title}` : `Skirmish — ${reason}`,
+    // titles from the LOCAL player's side (pathogens can be played in LAN / debug games)
+    title: me.faction === 'pathogen' ? (victory ? 'CAMPUS OVERRUN' : 'STRAIN ERADICATED') : (victory ? 'OUTBREAK CONTAINED' : 'CAMPUS LOST'),
+    subtitle: mission ? `${mission.subtitle}: ${mission.title}` : `${game.net ? 'LAN match' : 'Skirmish'} — ${reason}`,
     missionId: mission?.id,
     nextMissionId: victory && idx >= 0 ? CAMPAIGN[idx + 1]?.id ?? null : null,
     timeSeconds: game.world.time,

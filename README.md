@@ -24,6 +24,10 @@ of viruses, bacteria and fungi trying to overrun the campus.
 - **Save and load** in skirmish and campaign: 8 named slots with thumbnails, quicksave/quickload (F5/F9),
   an autosave every 3 minutes of game time, Continue from the main menu, and export/import as `.json` files.
   Saves are full snapshots; a test checks that a loaded game plays out exactly like the original.
+- **LAN 1v1 multiplayer.** Host or join from the Multiplayer menu, pick factions (hospital or pathogens,
+  mirror matches allowed), lobby chat, in-game chat and ping. Both browsers run the deterministic simulation
+  and exchange only commands (lockstep, 100 ms turns); state hashes are compared every second and a desync
+  is repaired automatically from a host snapshot.
 - **Everything is procedural.** All 3D models, textures, particle effects, sound effects and the adaptive
   music are generated in code; there are no asset files.
 
@@ -43,6 +47,17 @@ Production build (relative asset paths, so it also works behind a path-prefix pr
 ```bash
 npx vite build --base ./ && npx vite preview
 ```
+
+## LAN multiplayer
+On the machine that hosts:
+
+```bash
+npm run lan                 # builds, serves the game + relay on 0.0.0.0:8080 and prints the LAN URLs
+```
+
+Both players open the printed address (e.g. `http://192.168.1.20:8080/`), choose **Multiplayer (LAN)**,
+one hosts a room and the other joins it. The dev server (`npm run dev`) also includes the relay, so
+`http://<host-ip>:5173/` works for testing too. `npm run lan:e2e` runs an automated two-browser match.
 
 ## Controls (short version)
 Left-click / drag to select, right-click to move, attack or gather. **A** attack-move, **S** stop,

@@ -10,7 +10,9 @@
     "preview": "vite preview --port 4173 --host 0.0.0.0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "shot": "node scripts/shot.mjs"
+    "shot": "node scripts/shot.mjs",
+    "lan": "node scripts/lan-server.mjs",
+    "lan:e2e": "node scripts/lan-e2e.mjs"
   },
   "dependencies": {
     "three": "0.187.0",

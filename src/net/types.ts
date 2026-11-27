@@ -13,6 +13,7 @@
  */
 import type { Command, FactionId, PlayerId } from '../core/types';
 import type { World } from '../sim/World';
+import type { SaveGame } from '../sim/save';
 
 export const NET_PROTOCOL_VERSION = 1;
 
@@ -37,6 +38,10 @@ export interface MatchStart {
   turnTicks: number;          // sim ticks per lockstep turn (default 2 → 100 ms)
   inputDelayTurns: number;    // commands scheduled this many turns ahead (default 2)
   startTick: number;          // 0 for a new match; >0 after a resync from a snapshot
+  /** [net] relay-assigned id of this match (peer messages of other matches are ignored) */
+  matchId?: string;
+  /** [net] resync generation: 0 at match start, +1 after each host-driven resync */
+  epoch?: number;
 }
 
 export interface ChatMessage { from: string; slot: PlayerId | 0; text: string; at: number }
@@ -53,6 +58,10 @@ export interface NetEvents {
   opponentLeft: { name: string; reason: string };
   desync: { tick: number; localHash: string; remoteHash: string; resyncing: boolean };
   error: { message: string };
+  /** [net] the opponent reconnected within the grace period (the match continues) */
+  opponentReturned: { name: string };
+  /** [net] the room was closed (host left the lobby, or it was lost in a relay restart); session.lobby is null */
+  roomClosed: { reason: string };
 }
 
 /** The connection to the relay + one room. UI-facing (lobby, chat, status). */
@@ -73,6 +82,8 @@ export interface NetSession {
   startMatch(): void;
   sendChat(text: string): void;
   leave(): void;
+  /** [net] close the connection for good (status 'closed'; no reconnects) */
+  close?(): void;
   on<K extends keyof NetEvents>(type: K, fn: (e: NetEvents[K]) => void): () => void;
 }
 
@@ -90,6 +101,29 @@ export interface LockstepDriver {
   /** Non-null while the simulation is stalled, e.g. 'Waiting for Aino…' (HUD shows an overlay). */
   readonly waitingReason: string | null;
   dispose(): void;
+  /** [net] Game calls this once with itself (resync restarts the match via host.app.startGame) */
+  attach?(host: LockstepHost): void;
+  /** [net] opponent disconnected/left: when the local client wins by forfeit (ms, performance.now clock) */
+  readonly opponentGone?: { name: string; reason: string; forfeitAt: number } | null;
+  /** [net] round-trip time to the opponent, ms (NaN when unknown) */
+  readonly pingMs?: number;
+  /** [net] debug/testing: never run past this world tick (null = no limit) */
+  haltAtTick?: number | null;
+  /** [net] debug snapshot (tick, turn, epoch, recent hashes, desync/resync counters) */
+  debug?(): LockstepDebug;
+}
+
+/** [net] What a LockstepDriver needs from the running Game to restart it after a resync. */
+export interface LockstepHost {
+  readonly app: { startGame(cfg: { mode: 'multiplayer'; difficulty: 'normal'; net: NetMatch; load?: SaveGame }): void };
+}
+
+/** [net] LockstepDriver.debug() */
+export interface LockstepDebug {
+  tick: number; turn: number; epoch: number; remoteTurn: number; ownTurn: number;
+  hashes: Array<[turn: number, tick: number, hash: string]>;
+  hashChecks: number; desyncs: number; resyncs: number; rejectedCommands: number;
+  stalledMs: number; solo: boolean; forfeited: boolean;
 }
 
 /** What App/Game receive to run a networked match (LaunchConfig.net). */
@@ -100,8 +134,18 @@ export interface NetMatch {
 }
 
 /** Relay URL for the page that is currently loaded (works behind path-prefix proxies). */
-export function defaultRelayUrl(): string {
-  const base = new URL('lan', document.baseURI);
-  base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
-  return base.toString();
+export function defaultRelayUrl(loc: { href: string } = location): string {
+  return relayUrlFor(loc.href);
+}
+
+/** Pure helper (testable): `<page directory>/lan` with ws(s) scheme. A last path segment without a dot is a
+ *  directory even without a trailing slash, so `/code/ports/5176` and `/code/ports/5176/` both give `/code/ports/5176/lan`. */
+export function relayUrlFor(pageHref: string): string {
+  const u = new URL(pageHref);
+  u.search = ''; u.hash = '';
+  const last = u.pathname.split('/').pop() ?? '';
+  if (!u.pathname.endsWith('/') && !last.includes('.')) u.pathname += '/';
+  const relay = new URL('lan', u);
+  relay.protocol = relay.protocol === 'https:' ? 'wss:' : 'ws:';
+  return relay.toString();
 }

@@ -13,6 +13,7 @@ import { glyphHtml } from '../icons';
 import { createSettingsPanel, type SettingsPanel } from '../settingsPanel';
 import { createLoadPanel, createSavePanel, type Panel } from '../saveLoad';
 import type { NotifyKind } from '../../core/ui';
+import { sessionAlive, setMenuReturn } from '../mp/state';
 
 
 function button(parent: HTMLElement, label: string, glyph: string, cls = '', key?: string): HTMLButtonElement {
@@ -36,6 +37,8 @@ function arrowFocus(container: HTMLElement, e: KeyboardEvent): boolean {
 export class PauseMenu {
   private el: HTMLDivElement | null = null;
   private view: 'main' | 'settings' | 'confirm' | 'save' | 'load' = 'main';
+  /** multiplayer: surrender → leave the room → menu (set by the Hud) */
+  onLeaveMatch: (() => void) | null = null;
   private settings: SettingsPanel | null = null;
   private panel: Panel | null = null;
   private wasPaused = false;
@@ -72,6 +75,10 @@ export class PauseMenu {
 
   private subtitle(): string {
     const g = this.game;
+    if (g.net) {
+      const foe = g.net.start.players.find((p) => p.id === g.enemyPlayerId);
+      return `LAN match · ${g.map.name}${foe ? ` · vs ${foe.name}` : ''}`;
+    }
     const diff = g.config.difficulty[0]!.toUpperCase() + g.config.difficulty.slice(1);
     if (g.mission) return `${g.mission.info.subtitle} · ${g.mission.info.title} · ${diff}`;
     return `Skirmish · ${g.map.name} · ${diff}`;
@@ -89,6 +96,7 @@ export class PauseMenu {
   private showMain(): void {
     this.view = 'main';
     const c = this.card('ip-pause-card');
+    if (this.game.net) { this.showMainMultiplayer(c); return; }
     el('div', 'ip-pause-title', c, 'PAUSED');
     el('div', 'ip-pause-sub', c, this.subtitle());
     el('div', 'ip-flatline', c);
@@ -106,6 +114,57 @@ export class PauseMenu {
     button(c, this.game.mission ? 'Restart mission' : 'Restart match', 'ui.restart').addEventListener('click', () => { this.sound('click'); this.confirm('restart'); });
     button(c, 'Quit to main menu', 'ui.exit', 'ip-btn-danger').addEventListener('click', () => { this.sound('click'); this.confirm('quit'); });
     resume.focus();
+  }
+
+  /** Multiplayer menu: the match keeps running (no pause), no save/load/restart; surrender or leave. */
+  private showMainMultiplayer(c: HTMLDivElement): void {
+    el('div', 'ip-pause-title', c, 'MATCH MENU');
+    el('div', 'ip-pause-sub', c, this.subtitle());
+    el('div', 'ip-flatline', c);
+    const live = el('div', 'ip-set-hint', c, 'The match keeps running while this menu is open.');
+    live.style.textAlign = 'center';
+    const resume = button(c, 'Back to the match', 'ui.play', 'ip-btn-primary', 'Esc');
+    resume.addEventListener('click', () => this.close());
+    button(c, 'Settings', 'ui.sliders').addEventListener('click', () => { this.sound('click'); this.showSettings(); });
+    const over = this.game.world.rules.gameOver;
+    const sur = button(c, 'Surrender', 'ui.flag', 'ip-btn-danger');
+    sur.dataset.testid = 'mp-surrender';
+    sur.disabled = over;
+    sur.addEventListener('click', () => { this.sound('click'); this.confirmMp('surrender'); });
+    const leave = button(c, 'Leave match', 'ui.exit', 'ip-btn-danger');
+    leave.dataset.testid = 'mp-leave-match';
+    leave.addEventListener('click', () => { this.sound('click'); this.confirmMp('leave'); });
+    resume.focus();
+  }
+
+  private confirmMp(what: 'surrender' | 'leave'): void {
+    this.view = 'confirm';
+    const c = this.card('ip-pause-card');
+    el('div', 'ip-pause-title', c, what === 'surrender' ? 'SURRENDER?' : 'LEAVE?');
+    el('div', 'ip-pause-sub', c, this.subtitle());
+    el('div', 'ip-flatline', c);
+    const box = el('div', 'ip-confirm', c);
+    el('div', 'ip-confirm-txt', box, what === 'surrender'
+      ? 'Concede the match? Your opponent wins immediately.'
+      : 'Leave the match? You will surrender and leave the room.');
+    const row = el('div', 'ip-confirm-row', box);
+    const yes = button(row, what === 'surrender' ? 'Surrender' : 'Leave', what === 'surrender' ? 'ui.flag' : 'ui.exit', 'ip-btn-danger');
+    yes.dataset.testid = what === 'surrender' ? 'mp-surrender-confirm' : 'mp-leave-confirm';
+    const no = button(row, 'Cancel', 'ui.cross');
+    yes.addEventListener('click', () => {
+      this.sound('confirm');
+      const g = this.game;
+      if (what === 'surrender') {
+        this.close();
+        if (!g.world.rules.gameOver) g.issue({ type: 'surrender', playerId: g.localPlayerId });
+        return;
+      }
+      this.el?.remove(); this.el = null;
+      if (this.onLeaveMatch) this.onLeaveMatch();
+      else { try { g.net?.session.leave(); } catch { /* ignore */ } setMenuReturn('home'); g.quitToMenu(); }
+    });
+    no.addEventListener('click', () => { this.sound('click'); this.showMain(); });
+    no.focus();
   }
 
   private confirm(what: 'restart' | 'quit'): void {
@@ -193,6 +252,12 @@ function ecgPath(victory: boolean): string {
   return `M0 30 ${beat(40)} ${beat(150)} L240 30 L256 27 L262 33 L268 30 L600 30`;
 }
 
+/** Skirmish / LAN end banner from the LOCAL side's point of view (the sim's result title is hospital-centric). */
+function skirmishTitle(faction: string, victory: boolean): string {
+  if (faction === 'pathogen') return victory ? 'CAMPUS OVERRUN' : 'STRAIN ERADICATED';
+  return victory ? 'OUTBREAK CONTAINED' : 'CAMPUS LOST';
+}
+
 export class EndScreen {
   private el: HTMLDivElement | null = null;
   private timer = 0;
@@ -219,23 +284,40 @@ export class EndScreen {
     c.insertAdjacentHTML('beforeend', `<svg class="ip-end-ecg" viewBox="0 0 600 56" preserveAspectRatio="none" aria-hidden="true"><path d="${ecgPath(r.victory)}"/></svg>`);
     const campaign = !!r.missionId;
     el('div', 'ip-end-kicker', c, r.victory ? (campaign ? 'Mission complete' : 'Victory') : (campaign ? 'Mission failed' : 'Defeat'));
-    el('div', 'ip-end-title', c, r.title || (r.victory ? 'VICTORY' : 'DEFEAT'));
-    if (r.subtitle) el('div', 'ip-end-sub', c, r.subtitle);
+    el('div', 'ip-end-title', c, campaign ? r.title || (r.victory ? 'VICTORY' : 'DEFEAT') : skirmishTitle(me.faction, r.victory));
+    const sub = g.net && r.subtitle ? r.subtitle.replace(/^Skirmish/, 'LAN match') : r.subtitle;
+    if (sub) el('div', 'ip-end-sub', c, sub);
     el('div', 'ip-end-time', c, `Operation time ${fmtClock(r.timeSeconds)}`);
     if (r.stats?.length) {
       const t = el('table', 'ip-end-stats', c);
-      const youName = FACTIONS[me.faction]?.name ?? 'You';
-      const foeName = FACTIONS[foe.faction]?.name ?? 'Enemy';
+      // multiplayer (incl. mirror matches): player names; otherwise the two factions
+      const youName = g.net ? `You · ${FACTIONS[me.faction]?.short ?? ''}` : FACTIONS[me.faction]?.name ?? 'You';
+      const foeName = g.net ? `${g.net.start.players.find((p) => p.id === g.enemyPlayerId)?.name ?? foe.name ?? 'Opponent'} · ${FACTIONS[foe.faction]?.short ?? ''}` : FACTIONS[foe.faction]?.name ?? 'Enemy';
       t.innerHTML = `<thead><tr><th></th><th>${esc(youName)}</th><th>${esc(foeName)}</th></tr></thead><tbody>${r.stats.map((s) =>
         `<tr><td>${esc(s.label)}</td><td class="is-you">${esc(String(s.you))}</td><td>${s.enemy == null ? '—' : esc(String(s.enemy))}</td></tr>`).join('')}</tbody>`;
     }
     const btns = el('div', 'ip-end-btns', c);
     let first: HTMLButtonElement | null = null;
-    if (r.nextMissionId) {
+    if (r.nextMissionId && !g.net) {
       const next = CAMPAIGN.find((x) => x.id === r.nextMissionId);
       const b = button(btns, next ? `Next: ${next.title}` : 'Next mission', 'ui.next', 'ip-btn-primary');
       b.addEventListener('click', () => { this.sound('confirm'); g.app.startGame({ mode: 'campaign', missionId: r.nextMissionId!, difficulty: g.config.difficulty }); });
       first = b;
+    }
+    if (g.net) {
+      // multiplayer: no rematch / retry. Back to the lobby while the relay session lives, else the title screen.
+      const s = g.net.session;
+      const lobby = sessionAlive(s);
+      const b = button(btns, lobby ? 'Back to lobby' : 'Main menu', lobby ? 'ui.people' : 'ui.home', 'ip-btn-primary');
+      b.dataset.testid = 'mp-back-to-lobby';
+      b.addEventListener('click', () => { this.sound('click'); setMenuReturn(sessionAlive(s) ? 'lobby' : 'home'); g.quitToMenu(); });
+      if (lobby) {
+        const home = button(btns, 'Main menu', 'ui.home');
+        home.addEventListener('click', () => { this.sound('click'); try { s.leave(); } catch { /* ignore */ } setMenuReturn('home'); g.quitToMenu(); });
+      }
+      b.focus();
+      this.sound(r.victory ? 'confirm' : 'error');
+      return;
     }
     const retry = button(btns, r.victory ? 'Play again' : 'Retry', 'ui.restart', r.nextMissionId || r.victory ? '' : 'ip-btn-primary');
     retry.addEventListener('click', () => { this.sound('confirm'); g.restart(); });

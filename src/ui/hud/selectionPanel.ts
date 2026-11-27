@@ -190,7 +190,9 @@ export class SelectionPanel {
       const neutral = e.owner === 0;
       setClass(this.portraitBox, 'is-enemy', enemy);
       setClass(this.portraitBox, 'is-neutral', neutral);
-      this.ownerTxt.set(neutral ? 'Neutral' : e.owner === g.localPlayerId ? FACTIONS[fac].short : enemy ? FACTIONS[fac].short : 'Allied');
+      // LAN (mirror matches too): name the enemy player; otherwise the faction
+      const foeName = enemy && g.net ? g.world.players.get(e.owner)?.name : undefined;
+      this.ownerTxt.set(neutral ? 'Neutral' : e.owner === g.localPlayerId ? FACTIONS[fac].short : enemy ? (foeName ? `${foeName} · ${FACTIONS[fac].short}` : FACTIONS[fac].short) : 'Allied');
       const oc = neutral ? '#ffc94d' : enemy ? '#ff6b9a' : `#${(g.world.players.get(e.owner)?.color ?? 0x2fd6c6).toString(16).padStart(6, '0')}`;
       this.owner.style.setProperty('--oc', oc);
       this.hpKey = ''; this.statsKey = ''; this.qKey = ''; this.qProg = -1; this.bProg = -1;

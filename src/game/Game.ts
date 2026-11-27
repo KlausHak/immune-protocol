@@ -118,6 +118,7 @@ export class Game implements GameContext {
     }));
 
     (window as unknown as { __game?: Game }).__game = this;
+    this.net?.lockstep.attach?.(this); // [net] lets a desync resync restart the match via app.startGame
     this.last = performance.now();
     this.raf = requestAnimationFrame(this.frame);
   }
