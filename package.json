@@ -1,0 +1,26 @@
+{
+  "name": "immune-protocol",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "IMMUNE PROTOCOL — a 3D real-time strategy game: defend the HUS hospital campus against an AI-driven pathogen outbreak.",
+  "scripts": {
+    "dev": "vite --port 5173 --strictPort --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --port 4173 --host 0.0.0.0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "shot": "node scripts/shot.mjs"
+  },
+  "dependencies": {
+    "three": "0.187.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.1",
+    "@types/three": "0.187.0",
+    "playwright-core": "1.65.0-alpha-2026-10-30",
+    "typescript": "7.0.2",
+    "vite": "8.4.0",
+    "vitest": "5.1.2"
+  }
+}
